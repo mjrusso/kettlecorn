@@ -121,28 +121,31 @@ defmodule Kettlecorn.LauncherTest do
   end
 
   test "closing the port during a cold boot stops the launcher promptly", %{tmp_dir: tmp} do
-    instance =
-      TestRuntime.opts(
-        instances_dir: Path.join(tmp, "instances"),
-        cache_dir: Path.join(tmp, "cold-cache")
-      )
-      |> Sandbox.new()
-      |> Instance.prepare()
+    for input <- [<<>>, <<1024::32, "pending">>] do
+      instance =
+        TestRuntime.opts(
+          instances_dir: Path.join(tmp, "instances"),
+          cache_dir: Path.join(tmp, "cold-cache")
+        )
+        |> Sandbox.new()
+        |> Instance.prepare()
 
-    marker = Instance.stderr_file(instance) <> ".stopped"
-    on_exit(fn -> if File.regular?(marker), do: Instance.cleanup(instance) end)
-    [executable | args] = Instance.command(instance)
+      marker = Instance.stderr_file(instance) <> ".stopped"
+      on_exit(fn -> if File.regular?(marker), do: Instance.cleanup(instance) end)
+      [executable | args] = Instance.command(instance)
 
-    port =
-      Port.open({:spawn_executable, executable}, [:binary, :exit_status, :use_stdio, args: args])
+      port =
+        Port.open({:spawn_executable, executable}, [:binary, :exit_status, :use_stdio, args: args])
 
-    :erlang.unlink(port)
-    started = System.monotonic_time(:millisecond)
-    :erlang.exit(port, :kill)
-    await_stopped(marker, started + 2000)
-    assert JSON.decode!(File.read!(marker)) == %{"outcome" => "cancelled"}
-    Instance.cleanup(instance)
-    assert File.ls!(Path.join(tmp, "instances")) == []
+      :erlang.unlink(port)
+      assert Port.command(port, input)
+      started = System.monotonic_time(:millisecond)
+      :erlang.exit(port, :kill)
+      await_stopped(marker, started + 2000)
+      assert JSON.decode!(File.read!(marker)) == %{"outcome" => "cancelled"}
+      Instance.cleanup(instance)
+      assert File.ls!(Path.join(tmp, "instances")) == []
+    end
   end
 
   defp await_stopped(marker, deadline) do

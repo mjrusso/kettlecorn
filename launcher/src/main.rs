@@ -154,10 +154,10 @@ fn watch_port(cancel: Cancellation) -> Watcher {
     let done = finished.clone();
     std::thread::spawn(move || {
         while !done.load(Ordering::Acquire) {
-            // HUP is reported with events=0 even when unread bytes fill stdin.
+            // macOS needs POLLHUP in events to watch closure with unread input.
             let mut fd = libc::pollfd {
                 fd: 0,
-                events: 0,
+                events: libc::POLLHUP,
                 revents: 0,
             };
             let result = unsafe { libc::poll(&mut fd, 1, 100) };

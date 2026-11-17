@@ -49,10 +49,11 @@ VMs use the same cleanup function when they stop.
 
 Closing the port cancels execution, including a stalled output writer. Closing
 stdin cancels framed guests even when input is backlogged; raw EOF remains guest
-input for scripts. Cleanup waits for the launcher's atomically published JSON
-termination record before deleting the private root. The record identifies
-exit, cancellation, timeout, fuel exhaustion, or failure. Stderr supplies
-diagnostics; guest fatal frames retain priority.
+input for scripts. The stdin watcher explicitly requests `POLLHUP`, which macOS
+requires to report closure with unread input. Cleanup waits for the launcher's
+atomically published JSON termination record before deleting the private root.
+The record identifies exit, cancellation, timeout, fuel exhaustion, or failure.
+Stderr supplies diagnostics; guest fatal frames retain priority.
 
 The termination record is outside the guest root. Stderr does not determine
 the outcome; a missing result falls back to the process exit status.
