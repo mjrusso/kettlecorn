@@ -1,0 +1,16 @@
+result*
+.nix-mix/
+.nix-hex/
+host/_build/
+host/deps/
+examples/apps/*/_build/
+examples/apps/*/deps/
+guest/hex/_build/
+guest/hex/deps/
+host/tmp/
+doc/
+release
+erl_crash.dump
+_kettlecorn
+_kettlecorn.versions/
+launcher/target/
