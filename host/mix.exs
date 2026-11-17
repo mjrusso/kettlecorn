@@ -29,6 +29,7 @@ defmodule Kettlecorn.MixProject do
   # nix/host-tests.nix fetches only test dependencies; check tools stay in dev.
   defp deps do
     [
+      {:nimble_options, "~> 1.2"},
       {:stream_data, "~> 1.2", only: :test},
       {:credo, "~> 1.7.19", only: :dev, runtime: false},
       {:ex_slop, "~> 0.4.5", only: :dev, runtime: false},

@@ -19,6 +19,10 @@ run *args:
 iex *args:
     nix run .#iex -- {{args}}
 
+# An IEx session with the host library, ready to start VMs.
+dev:
+    {{runtime}} && cd host && iex -S mix
+
 test: test-stdio test-host
 
 test-host:
