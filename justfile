@@ -50,6 +50,20 @@ format:
 release-archive:
     nix build .#release -o release
 
+# Record every published platform archive checksum in the Hex package.
+release-checksums version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    for target in x86_64-linux aarch64-linux aarch64-darwin; do
+      name="kettlecorn-runtime-{{version}}-$target.tar.gz"
+      base="https://github.com/mjrusso/kettlecorn/releases/download/v{{version}}"
+      curl -fsSL -o "$tmp/$name" "$base/$name"
+      curl -fsSL -o "$tmp/$name.sha256" "$base/$name.sha256"
+      (cd "$tmp" && sha256sum -c "$name.sha256")
+    done
+    (cd "$tmp" && sha256sum *.tar.gz) | tee host/priv/checksums.txt
+
 # Needs a cache write token configured with `cachix authtoken <TOKEN>`;
 # see host/guides/development.md, "Binary cache".
 # Builds the checks, the release archive and the dev shell; uploads them to Cachix.

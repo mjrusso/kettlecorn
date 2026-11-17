@@ -1,0 +1,133 @@
+defmodule Kettlecorn.Install do
+  @moduledoc """
+  Installs the native runtime for this platform from a GitHub release.
+
+  `runtime/1` downloads `kettlecorn-runtime-<version>-<system>.tar.gz` and
+  verifies its SHA-256 against the package's `priv/checksums.txt`. Configure
+  `:release_base_url` for a mirror with the same release layout. The archive
+  includes the launcher; no separate Wasmtime installation is needed.
+  """
+
+  require Logger
+
+  alias Kettlecorn.{Dir, Runtime}
+
+  @release_base "https://github.com/mjrusso/kettlecorn/releases/download"
+
+  @doc "Release archive name for this platform."
+  def archive_name do
+    with {:ok, platform} <- Kettlecorn.Platform.current(),
+         do: {:ok, "kettlecorn-runtime-#{Runtime.version()}-#{platform}.tar.gz"}
+  end
+
+  defp url(name) do
+    base = Application.get_env(:kettlecorn, :release_base_url, @release_base)
+    "#{base}/v#{Runtime.version()}/#{name}"
+  end
+
+  @doc """
+  Downloads the release runtime for this version into `:dir` (default:
+  `Kettlecorn.Runtime.installed_dir/0`). Reuses a compatible installation
+  unless `force: true`. Publication atomically replaces a symbolic link;
+  previous generations remain in `<dir>.versions` for existing readers.
+  Move an existing ordinary directory aside before replacing it, even with
+  `force: true`.
+  Returns `{:ok, dir}` or `{:error, message}`.
+  """
+  @spec runtime(keyword()) :: {:ok, Path.t()} | {:error, String.t()}
+  def runtime(opts \\ []) do
+    dir = opts[:dir] || Runtime.installed_dir()
+
+    if match?({:ok, _}, Runtime.load(dir)) and !opts[:force] do
+      {:ok, dir}
+    else
+      with {:ok, name} <- archive_name(),
+           {:ok, archive} <- fetch_verified(name, url(name)),
+           :ok <- unpack_runtime(archive, dir) do
+        {:ok, dir}
+      end
+    end
+  end
+
+  # The archive holds one top-level runtime directory.
+  # It replaces `dir` only once it has passed the version handshake.
+  defp unpack_runtime(archive, dir) do
+    build = fn staging ->
+      with :ok <- extract(archive, staging),
+           {:ok, [top]} <- File.ls(staging),
+           {:ok, _runtime} <- Runtime.load(Path.join(staging, top)) do
+        {:ok, Path.join(staging, top)}
+      else
+        {:ok, _entries} -> {:error, "runtime archive doesn't hold one runtime directory"}
+        {:error, message} -> {:error, message}
+      end
+    end
+
+    Dir.replace(dir, build)
+  end
+
+  defp extract(archive, staging) do
+    case :erl_tar.extract({:binary, archive}, [:compressed, cwd: String.to_charlist(staging)]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "unpacking runtime archive: #{inspect(reason)}"}
+    end
+  end
+
+  defp fetch_verified(name, url) do
+    with {:ok, expected} <- expected_checksum(name),
+         {:ok, archive} <- download(url),
+         :ok <- verify(archive, name, expected) do
+      {:ok, archive}
+    end
+  end
+
+  # priv/checksums.txt: `sha256sum` lines, "<sha256>  <file name>".
+  defp expected_checksum(name) do
+    found =
+      :kettlecorn
+      |> :code.priv_dir()
+      |> Path.join("checksums.txt")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.find_value(fn line ->
+        case String.split(line) do
+          [sha256, ^name] -> sha256
+          _ -> nil
+        end
+      end)
+
+    if found,
+      do: {:ok, found},
+      else:
+        {:error,
+         "no checksum for #{name} in priv/checksums.txt: this version of the library doesn't " <>
+           "install it (for the runtime: build one with `nix build .#runtime` and set KETTLECORN_RUNTIME)"}
+  end
+
+  defp download(url) do
+    {:ok, _} = Application.ensure_all_started([:inets, :ssl])
+    Logger.info("kettlecorn: downloading #{url}")
+
+    ssl = [
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+    ]
+
+    http = [ssl: ssl, autoredirect: true, connect_timeout: 30_000, timeout: 600_000]
+
+    case :httpc.request(:get, {String.to_charlist(url), []}, http, body_format: :binary) do
+      {:ok, {{_, 200, _}, _headers, body}} -> {:ok, body}
+      {:ok, {{_, status, _}, _, _}} -> {:error, "downloading #{url}: HTTP #{status}"}
+      {:error, reason} -> {:error, "downloading #{url}: #{inspect(reason)}"}
+    end
+  end
+
+  defp verify(archive, name, expected) do
+    actual = :sha256 |> :crypto.hash(archive) |> Base.encode16(case: :lower)
+
+    if actual == expected,
+      do: :ok,
+      else: {:error, "#{name}: SHA-256 #{actual}, expected #{expected}"}
+  end
+end
