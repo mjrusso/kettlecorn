@@ -64,23 +64,31 @@ end)
 Kettlecorn.stop(vm)
 ```
 
-`"value"` holds the result when it is plain data within the evaluator's
-traversal limit; otherwise it is omitted. `"inspected"` contains the formatted
-result, and `"output"` contains captured standard output. Writes to stderr
-go to the VM's console output, available through owner events and
-`Kettlecorn.take_output/1`.
+### Evaluation results
 
-`max_fuel` limits the VM's total execution budget, measured roughly in
-WebAssembly instructions. `max_lifetime: 30_000` limits its lifetime to 30
-seconds. Both limits include startup and apply across all evaluations in that VM.
+| Field | Contains |
+|---|---|
+| `"value"` | The result as plain data, within the evaluator's traversal limit. Omitted for other results. |
+| `"inspected"` | The result's text representation. |
+| `"output"` | Captured standard output. |
 
-Pass `language: :erlang` to `Kettlecorn.eval/3` for Erlang expressions or
-module source. `Kettlecorn.run/2` evaluates code in a fresh VM and stops it.
-From the command line, use `mix kettlecorn.eval 'Enum.sum(1..10)'`
-(`--erlang` for Erlang).
+Writes to stderr go to the VM's console output, available through owner events
+and `Kettlecorn.take_output/1`.
+
+### VM limits and lifetime
+
+The example sets two limits for the whole VM:
+
+| Option | Limits |
+|---|---|
+| `max_fuel` | Total execution budget, measured roughly in WebAssembly instructions. |
+| `max_lifetime: 30_000` | Lifetime of 30 seconds. |
+
+Both include startup and apply across all evaluations in that VM.
 
 `start_link/1` links the VM to its caller: a resource limit or guest crash can
-terminate that caller. Use `run/2` for a single evaluation, or see
+terminate that caller. `Kettlecorn.run/2` starts a fresh VM, evaluates code
+once, and stops it afterward. See
 [Managing VM lifetime](guides/sandbox.md#managing-vm-lifetime) for unlinked VMs
 and caller cleanup.
 
@@ -88,10 +96,14 @@ Reuse a VM for repeated evaluations from the same tenant. Give mutually
 untrusted tenants separate VMs: modules, processes, and files persist
 between evaluations. See [VM reuse](guides/sandbox.md#reusing-vms).
 
-* `Kettlecorn` - evaluate code, call and cast to guest GenServers, exchange
-  messages, and answer host calls.
-* `Kettlecorn.start_link/1` - start a VM and configure boot and event delivery.
-* `Kettlecorn.Sandbox` - resource limits, network grants, guest code, and caching.
+### Erlang and command-line use
+
+* **Erlang:** pass `language: :erlang` to `Kettlecorn.eval/3` for expressions
+  or module source.
+* **Command line:** `mix kettlecorn.eval 'Enum.sum(1..10)'` evaluates Elixir;
+  pass `--erlang` for Erlang.
+
+### Guest events
 
 With `owner: pid`, consume guest events and call `Kettlecorn.acknowledge(vm)`
 after each one. Exceeding the unacknowledged event count or byte budget stops
@@ -124,6 +136,13 @@ covers runtime discovery, rejected payloads, and VM failures.
 [Guest API](guides/guest-api.md) documents the modules available inside the VM.
 
 ## Learn the API
+
+API reference:
+
+* `Kettlecorn` - evaluate code, call and cast to guest GenServers, exchange
+  messages, and answer host calls.
+* `Kettlecorn.start_link/1` - start a VM and configure boot and event delivery.
+* `Kettlecorn.Sandbox` - resource limits, network grants, guest code, and caching.
 
 [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fmjrusso%2Fkettlecorn%2Fblob%2Fmain%2Fhost%2Fnotebooks%2Fgetting-started.livemd)
 

@@ -9,20 +9,22 @@
 Kettlecorn runs untrusted Elixir and Erlang in a WebAssembly sandbox.
 Use it to isolate user code, plugins, or whole Mix applications.
 
-Each VM runs OTP 29 and Elixir 1.20 under [Wasmtime](https://wasmtime.dev),
-in its own process with a private filesystem. Network access is off by
-default; guest memory, CPU, and wall-clock limits are configurable.
-
 > [!WARNING]
 >
-> Kettlecorn is experimental. It enables Wasmtime's
-> [component-model threading](https://docs.wasmtime.dev/stability-wasm-proposals.html#component-model-proposals),
+> Kettlecorn is experimental. It enables Wasmtime's [component-model
+> threading](https://docs.wasmtime.dev/stability-wasm-proposals.html#component-model-proposals),
 > an unfinished feature that Wasmtime leaves off by default.
 >
-> Bugs in Kettlecorn or its dependencies may compromise isolation. Set
-> finite `max_fuel` and `max_lifetime` limits for untrusted workloads.
-> These constrain guest execution; host memory and disk use need separate
-> controls. Review [the sandbox's limits and network grants](host/guides/sandbox.md).
+> Bugs in Kettlecorn or its dependencies may compromise isolation. Set finite
+> `max_fuel` and `max_lifetime` limits for untrusted workloads. These constrain
+> guest execution; host memory and disk use need separate controls. Review [the
+> sandbox's limits and network grants](host/guides/sandbox.md).
+
+Each VM runs OTP 29 and Elixir 1.20 under [Wasmtime](https://wasmtime.dev),
+in its own process with a private filesystem. Network access is off by default.
+Set `max_memory` to cap guest memory, `max_fuel` to limit execution, and
+`max_lifetime` to bound elapsed time. Fuel is measured roughly in WebAssembly
+instructions; fuel and lifetime limits cover startup and all evaluations.
 
 ```elixir
 {:ok, vm} = Kettlecorn.start_link(max_fuel: 50_000_000_000, max_lifetime: 30_000)
@@ -37,27 +39,12 @@ Kettlecorn.eval(vm, ~S|IO.puts("hi"); Enum.map(1..3, fn n -> {n, n * n} end)|)
 Kettlecorn.stop(vm)
 ```
 
-`"value"` holds the result when it is plain data within the evaluator's
-traversal limit; otherwise it is omitted. `"inspected"` contains the formatted
-result, and `"output"` contains captured standard output. Writes to stderr
-go to the VM's console output, available through owner events and
-`Kettlecorn.take_output/1`.
+Here, `"value"` is the returned list, `"inspected"` is its text representation,
+and `"output"` is captured stdout.
 
-`max_fuel` limits the VM's total execution budget, measured roughly in
-WebAssembly instructions. `max_lifetime: 30_000` limits its lifetime to 30
-seconds. Both limits include startup and apply across all evaluations in that VM.
-
-Evaluate Erlang with `language: :erlang`. You can also run scripts, start
-IEx, and package Mix applications with `mix kettlecorn.cook`. Guest code
-can use the runtime's OTP applications but cannot load native code or
-start OS processes.
-
-Cooking compiles on the host: use trusted projects or
-[isolate the build separately](host/guides/running-applications.md#cooking-mix-applications).
-
-Reuse a VM for repeated evaluations from the same tenant; startup copies
-the runtime's files and boots OTP. See [performance](host/guides/performance.md)
-for startup behavior and local benchmark instructions.
+Use Kettlecorn from your Elixir application or run scripts and IEx with
+`kettlecorn-run`. To run a Mix application in the sandbox, package it with
+[`mix kettlecorn.cook`](host/guides/running-applications.md#cooking-mix-applications).
 
 ## Getting started
 
