@@ -114,6 +114,21 @@
           };
         };
 
+        # `kettlecorn-run script.exs`, with the runtime and native launcher.
+        kettlecorn-run = pkgs.runCommand "kettlecorn-run"
+          {
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            buildInputs = [ pkgs.bash ];
+            meta.mainProgram = "kettlecorn-run";
+          }
+          ''
+            install -Dm755 ${./bin/kettlecorn-run} $out/libexec/kettlecorn-run
+            patchShebangs --host $out/libexec
+            makeWrapper $out/libexec/kettlecorn-run $out/bin/kettlecorn-run \
+              --set-default KETTLECORN_RUNTIME ${runtime} \
+              --prefix PATH : ${lib.makeBinPath (with pkgs; [ coreutils gnused gawk ])}
+          '';
+
         basePackages = with pkgs; [
           git
           just
@@ -151,9 +166,19 @@
       {
         packages = {
           default = runtime;
-          inherit runtime guestDeps openssl launcher;
+          inherit runtime kettlecorn-run guestDeps openssl launcher;
           otp = otpWasi;
           inherit (toolchain) resourceDir sysroot compat cc;
+        };
+
+        apps = {
+          default = flake-utils.lib.mkApp { drv = kettlecorn-run; };
+          # `nix run .#iex`: an interactive IEx session in the sandbox.
+          iex = flake-utils.lib.mkApp {
+            drv = pkgs.writeShellScriptBin "kettlecorn-iex" ''
+              exec ${lib.getExe kettlecorn-run} --iex "$@"
+            '';
+          };
         };
 
         checks.runtime = runtime;

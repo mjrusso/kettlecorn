@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Run Elixir with the native launcher bundled in a Kettlecorn runtime.
+#
+#   kettlecorn-run [options] script.exs [args...]   run a script, like `elixir`
+#   kettlecorn-run [options] -e CODE                evaluate code, like `elixir -e`
+#   kettlecorn-run [options] --iex [script.exs]     interactive IEx, like `iex`
+#   kettlecorn-run [options] --app DIR              start a cooked application
+#
+# Options:
+#   --app DIR           a cooked application (mix kettlecorn.cook): its
+#                       applications replace the runtime's, and it starts
+#                       first, like `mix run` / `iex -S mix`
+#   --iex               start IEx (raw-mode line editing in a terminal)
+#   --max-memory BYTES  maximum WebAssembly linear memory (default: unlimited)
+#   --timeout DURATION  lifetime, including compilation, boot and output draining (e.g. 2s, 500ms)
+#   --fuel N            Wasmtime execution budget, including guest boot
+#                       timeout and fuel are unlimited unless specified
+#   --network           allow TCP/UDP sockets and DNS to any destination
+#   --cacertfile FILE   with --network, the PEM CA certificates the guest
+#                       trusts (:public_key.cacerts_get/0, Req). Default:
+#                       $SSL_CERT_FILE, else the host's bundle in
+#                       /etc/ssl/certs/ca-certificates.crt,
+#                       /etc/pki/tls/certs/ca-bundle.crt or /etc/ssl/cert.pem
+#   --http              allow outgoing HTTP to any destination via wasi:http
+#                       (beam-http.wasm), used by Kettlecorn.HTTP and Req
+#   --runtime DIR       default $KETTLECORN_RUNTIME, else the runtime this
+#                       script is in (a release archive)
+#
+# The guest sees only a private copy of the runtime's root (OTP + Elixir
+# .beam files), the cooked app at /app if supplied, the script at /work/<name>,
+# and stdin/stdout/stderr. No network unless granted, no other host files,
+# no OS processes. The copy is deleted afterwards.
+# `nix run .#kettlecorn-run` sets the runtime.
+set -euo pipefail
+runtime="${KETTLECORN_RUNTIME:-}"
+# In a release archive the script sits in <runtime>/bin.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -z "${runtime}" && -f "${here}/../manifest.json" ]] && runtime="$(cd "${here}/.." && pwd)"
+limits=()
+network=false
+http=false
+cacertfile=""
+app=""
+iex=false
+usage() { sed -n '2,/^[^#]/{ /^[^#]/q; s/^# \{0,1\}//; p; }' "$0"; }
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --runtime) runtime="$2"; shift 2 ;;
+        --app) app="$(cd "$2" && pwd -P)"; shift 2 ;;
+        --iex) iex=true; shift ;;
+        --max-memory) limits+=(--max-memory "$2"); shift 2 ;;
+        --timeout) limits+=(--timeout "$2"); shift 2 ;;
+        --fuel) limits+=(--fuel "$2"); shift 2 ;;
+        --network) network=true; shift ;;
+        --cacertfile) cacertfile="$2"; shift 2 ;;
+        --http) http=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -e|--eval) break ;;
+        -*) echo "kettlecorn-run: unknown option $1 (see --help)" >&2; exit 64 ;;
+        *) break ;;
+    esac
+done
+[[ -n "${runtime}" ]] || { echo "kettlecorn-run: no runtime: pass --runtime DIR or set KETTLECORN_RUNTIME" >&2; exit 64; }
+runtime="$(cd "${runtime}" && pwd -P)"
+[[ -f "${runtime}/manifest.json" ]] || { echo "kettlecorn-run: ${runtime} is not a Kettlecorn runtime (no manifest.json)" >&2; exit 64; }
+[[ -f "${runtime}/launch/init-args" ]] || { echo "kettlecorn-run: ${runtime} is not a complete runtime (no launch/)" >&2; exit 64; }
+[[ $# -ge 1 || "${iex}" == true || -n "${app}" ]] || { usage >&2; exit 64; }
+[[ -z "${app}" || ( -f "${app}/app" && -f "${app}/kettlecorn.json" ) ]] || { echo "kettlecorn-run: ${app} is not a cooked app" >&2; exit 64; }
+[[ -z "${cacertfile}" || -f "${cacertfile}" ]] || { echo "kettlecorn-run: ${cacertfile} is not a file" >&2; exit 64; }
+if [[ "${network}" == true && -z "${cacertfile}" ]]; then
+    for f in "${SSL_CERT_FILE:-}" /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+        if [[ -f "${f}" ]]; then cacertfile="${f}"; break; fi
+    done
+fi
+
+instance="$(mktemp -d "${TMPDIR:-/tmp}/kettlecorn-run.XXXXXX")"
+root="${instance}/root"
+saved_tty=""
+cleanup() {
+    [[ -n "${saved_tty}" ]] && stty "${saved_tty}" 2>/dev/null
+    rm -rf "${instance}"
+}
+stop_child() {
+    local signal=$1 status=$2 pid
+    trap '' INT TERM
+    # The job table includes the child even before child_pid=$! runs.
+    for pid in $(jobs -pr); do
+        kill -s "${signal}" "${pid}" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    exit "${status}"
+}
+trap cleanup EXIT
+trap 'stop_child INT 130' INT
+trap 'stop_child TERM 143' TERM
+trap 'stop_child QUIT 131' QUIT
+run_child() {
+    (
+        trap - INT QUIT
+        exec "$@"
+    ) <&0 &
+    child_pid=$!
+    wait "${child_pid}"
+}
+prepare=(--prepare-root --runtime "${runtime}" --root "${root}")
+[[ -n "${app}" ]] && prepare+=(--app-dir "${app}")
+[[ "${network}" == true && -n "${cacertfile}" ]] && prepare+=(--certificates "${cacertfile}")
+extra=()
+if [[ $# -ge 1 && ( "$1" == -e || "$1" == --eval ) ]]; then
+    extra=("$@")
+elif [[ $# -ge 1 ]]; then
+    guest_script="/work/$(basename "$1")"
+    prepare+=(--copy-file "$1" "${guest_script}")
+    extra+=("${guest_script}"); shift
+    extra+=("$@")
+fi
+
+run_child "${runtime}/bin/kettlecorn-launch" "${prepare[@]}"
+
+options=(--runtime "${runtime}" --root "${root}")
+[[ "${network}" == true ]] && options+=(--network)
+[[ "${http}" == true ]] && options+=(--http)
+[[ "${iex}" == true ]] && options+=(--iex)
+if [[ "${iex}" == true && -t 0 && -t 1 ]]; then
+    saved_tty="$(stty -g)"
+    stty -icanon -echo -icrnl -istrip -opost min 1 time 0
+    read -r rows cols < <(stty size) || true
+    options+=(--env "TERM=${TERM:-xterm}" --env "COLUMNS=${cols:-80}" --env "LINES=${rows:-24}")
+fi
+run_child "${runtime}/bin/kettlecorn-launch" "${options[@]}" ${limits[@]+"${limits[@]}"} -- ${extra[@]+"${extra[@]}"}

@@ -11,6 +11,14 @@ default:
 build:
     nix build .#runtime
 
+# Run an Elixir script in the sandbox, e.g. `just run examples/01_hello.exs`.
+run *args:
+    nix run .#kettlecorn-run -- {{args}}
+
+# Interactive IEx in the sandbox (line editing, history, completion).
+iex *args:
+    nix run .#iex -- {{args}}
+
 test: test-stdio
 
 test-stdio:
