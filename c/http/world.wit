@@ -1,0 +1,5 @@
+package kettlecorn:http-nif;
+
+world http-nif {
+  import wasi:http/client@0.3.0;
+}

@@ -100,6 +100,14 @@
 
       in
       {
+        checks.stdio = pkgs.runCommand "kettlecorn-stdio-tests"
+          { nativeBuildInputs = [ pkgs.stdenv.cc pkgs.python3 erlang ]; }
+          ''
+            export HOME=$TMPDIR
+            python3 ${./c}/test/stdio_test.py
+            touch $out
+          '';
+
         devShells = {
           ci = pkgs.mkShell {
             packages = basePackages;
