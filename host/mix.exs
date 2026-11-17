@@ -32,6 +32,7 @@ defmodule Kettlecorn.MixProject do
       {:nimble_options, "~> 1.2"},
       {:lua, "1.0.2", only: [:dev, :test]},
       {:stream_data, "~> 1.2", only: :test},
+      {:benchee, "~> 1.3", only: :bench},
       {:credo, "~> 1.7.19", only: :dev, runtime: false},
       {:ex_slop, "~> 0.4.5", only: :dev, runtime: false},
       {:ex_dna, "~> 1.5.4", only: :dev, runtime: false},

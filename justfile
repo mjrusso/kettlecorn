@@ -109,6 +109,15 @@ format:
     nixpkgs-fmt flake.nix nix/*.nix
     cd host && mix format && mix format ../examples/apps/*/mix.exs $(find ../guest/lib -name '*.ex')
 
+# Benchmark startup and workloads (BENCH_TIME sets seconds per scenario).
+bench: bench-startup bench-workloads
+
+bench-startup:
+    {{runtime}} && cd host && MIX_ENV=bench mix run bench/startup.exs
+
+bench-workloads:
+    {{runtime}} && cd host && MIX_ENV=bench mix run bench/workloads.exs
+
 # The runtime release archive (as the release workflow builds it), into ./release.
 release-archive:
     nix build .#release -o release
