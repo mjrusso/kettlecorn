@@ -131,6 +131,8 @@ defmodule Kettlecorn do
   `call/4`, so it can also return `call/4`'s errors:
 
     * `{:error, {:vm_down, reason}}` - the whole VM died.
+    * `{:error, :request_queue_full}` - the unanswered request limit was reached;
+      the evaluation request was not sent.
     * `{:error, :timeout}` - the proxy received no evaluator reply by
       `:timeout` + #{Timeout.evaluation(0).proxy} milliseconds, or the host received no
       guest reply by `:timeout` + #{Timeout.evaluation(0).host} milliseconds. An evaluator
@@ -189,7 +191,9 @@ defmodule Kettlecorn do
   Calls a GenServer registered as `target` in the guest, like `GenServer.call/3`.
 
   Returns `{:ok, reply}` or `{:error, reason}`. Common reasons are `:noproc`,
-  `:timeout`, `{:exit, inspected_reason}` and `{:vm_down, reason}`.
+  `:timeout`, `:request_queue_full`, `{:exit, inspected_reason}` and `{:vm_down, reason}`.
+  `:request_queue_full` means the VM's unanswered request limit was reached;
+  the request was not sent.
   The guest can reject delivery with `:bad_payload` or `:bad_request`;
   a malformed proxy reply returns `{:bad_reply, term}`.
   After `timeout`, the host allows another #{Timeout.request(0).host} milliseconds
@@ -223,6 +227,7 @@ defmodule Kettlecorn do
 
   Unlike `Kernel.send/2`, reports whether the target existed: `:ok`, or
   `{:error, reason}` with `:noproc`, `:bad_payload`, `:bad_request`,
+  `:request_queue_full` (rejected before transmission),
   `:timeout` (no answer within `timeout` plus #{Timeout.request(0).host} milliseconds)
   or `{:vm_down, reason}`. A handle from another VM returns `{:error, :wrong_vm}`.
   """

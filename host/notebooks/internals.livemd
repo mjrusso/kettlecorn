@@ -107,7 +107,7 @@ File.exists?(instance.dir)
 ## A running VM
 
 Start a VM and look at its state. It owns the launcher process through a
-port, and keeps a map of requests waiting for the guest. This interactive
+port, and tracks unanswered requests in a request registry. This interactive
 VM expires after ten minutes; restart from this cell if it expires:
 
 ```elixir
@@ -118,8 +118,10 @@ VM expires after ten minutes; restart from this cell if it expires:
     max_lifetime: 600_000
   )
 
-state = :sys.get_state(vm)
-Map.take(state, [:boot, :pending, :max_message_size])
+%{boot: :ready, requests: requests} = state = :sys.get_state(vm)
+%{limit: 1_024} = requests
+true = requests.entries == %{}
+Map.take(state, [:boot, :requests, :max_message_size])
 ```
 
 Each VM has its own launcher process. All of the guest's BEAM schedulers

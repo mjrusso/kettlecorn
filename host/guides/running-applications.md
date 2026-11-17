@@ -166,8 +166,10 @@ Start and stop a VM as the deployment user to warm it before serving requests.
 | A host call times out after a reply | Replies also reject atoms absent from the guest. Use strings for application-defined names and error reasons; `reply/3` does not confirm delivery. |
 | Evaluation has `"inspected"` but no `"value"` | The result contains unsupported terms, such as a function or pid, or exceeds the evaluator's traversal limit. Return bounded plain data or send a guest pid through `Kettlecorn.Host.send/1`. |
 | Missing stderr in `"output"` | Evaluation capture contains standard output. Read console output with `take_output/1`, or configure an owner for separate stdout/stderr events. |
+| `:request_queue_full` | The unanswered request limit was reached; this request was not sent. Bound host concurrency or adjust `max_pending_requests`. |
 | VM stops with `:event_queue_full` | Consume owner events and acknowledge each after handling it. Adjust event budgets only when the owner can keep up. |
 | `:unsupported_timeout` from HTTP | The HTTP adapter cannot disable timeouts. Replace `:infinity` with `:default` or finite milliseconds; Req wraps this reason in `Req.TransportError`. |
+| Caller exits but guest work continues | Caller monitoring releases host tracking. Use `stop_with: caller` or stop the VM to cancel its work. |
 | VM stops or its caller exits | Inspect `{:vm_down, reason}` or the monitor notification. Resource limits stop the whole VM, and links propagate abnormal exits. See [Managing VM lifetime](sandbox.md#managing-vm-lifetime). |
 
 ## Optional features

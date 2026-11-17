@@ -79,6 +79,11 @@ launcher queue, and guest.
 
 Host input is queued within fixed count and byte budgets and sent without
 suspending the VM process on a busy port. Shutdown discards queued input.
+The [request registry](https://github.com/mjrusso/kettlecorn/blob/main/host/lib/kettlecorn/vm/requests.ex)
+separately bounds unanswered requests, allocates IDs
+for all sends, and owns caller monitors and deadline timers. Replies, deadlines,
+caller exits, and VM failures release entries and their resources. Requests
+above `max_pending_requests` are rejected before transmission.
 The [protocol specification](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md#native-launcher-output-transport)
 defines the socket records; [sandbox limits](sandbox.md#output-and-messages)
 document the input and owner-event budgets.

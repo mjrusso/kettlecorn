@@ -30,6 +30,7 @@ defmodule Kettlecorn.VM do
   alias Kettlecorn.Protocol
   alias Kettlecorn.Sandbox.Instance
   alias Kettlecorn.VM.Output
+  alias Kettlecorn.VM.Requests
 
   @options_schema NimbleOptions.new!(
                     owner: [
@@ -65,6 +66,14 @@ defmodule Kettlecorn.VM do
                       {:frame_too_large, length}}`. Also sets the decoder's memory budget (retained
                       binaries plus estimated heap space); messages exceeding that budget are
                       dropped. See `Kettlecorn.ETF`.
+                      """
+                    ],
+                    max_pending_requests: [
+                      type: :pos_integer,
+                      default: 1_024,
+                      doc: """
+                      Maximum unanswered requests. Excess requests return `{:error, :request_queue_full}`
+                      before transmission. Caller exit releases a request without cancelling guest work.
                       """
                     ],
                     max_pending_events: [
@@ -113,10 +122,7 @@ defmodule Kettlecorn.VM do
     input_bytes: 0,
     boot: :booting,
     frame_decoder: {:header, ""},
-    next_id: 1,
-    # id => {:send | :call, from, deadline_timer}. A call's id is also the id
-    # of the send frame that carries it to the proxy.
-    pending: %{},
+    requests: %Requests{},
     output: [],
     output_size: 0,
     fatal: nil
@@ -179,6 +185,7 @@ defmodule Kettlecorn.VM do
       instance: instance,
       stop_with: stop_with,
       events: Events.new(opts[:max_pending_events], opts[:max_pending_event_bytes]),
+      requests: Requests.new(Keyword.fetch!(opts, :max_pending_requests)),
       output_limit: Keyword.fetch!(opts, :output_limit),
       max_message_size: Keyword.fetch!(opts, :max_message_size)
     }
@@ -257,9 +264,13 @@ defmodule Kettlecorn.VM do
       do: {:reply, {:error, :wrong_vm}, state}
 
   def handle_call({:request, kind, _origin, prepared, timeout}, from, state) do
-    {id, state} = next_id(state)
-    state = track(state, id, {kind, from}, timeout)
-    continue(command(state, Protocol.send_frame(id, prepared)))
+    case Requests.admit(state.requests, kind, from, timeout) do
+      {:ok, id, requests} ->
+        continue(command(%{state | requests: requests}, Protocol.send_frame(id, prepared)))
+
+      :full ->
+        {:reply, {:error, :request_queue_full}, state}
+    end
   end
 
   def handle_call(:take_output, _from, state) do
@@ -325,15 +336,14 @@ defmodule Kettlecorn.VM do
 
   def handle_info(:max_lifetime, state), do: down(state, :timeout)
 
-  def handle_info({:deadline, id}, state) do
-    case Map.get(state.pending, id) do
-      {_kind, from, _timer} -> {:noreply, reply(state, id, from, {:error, :timeout})}
-      nil -> {:noreply, state}
-    end
-  end
+  def handle_info({:deadline, id, monitor}, state),
+    do: {:noreply, %{state | requests: Requests.expire(state.requests, id, monitor)}}
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, %{stop_with: pid} = state),
     do: {:stop, :normal, state}
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state),
+    do: {:noreply, %{state | requests: Requests.caller_down(state.requests, ref)}}
 
   def handle_info({:EXIT, _port, _reason}, state), do: {:noreply, state}
 
@@ -405,10 +415,10 @@ defmodule Kettlecorn.VM do
   defp handle_frame({:fatal, text}, state, _size), do: %{state | fatal: text}
 
   defp handle_frame({:send_result, id, result}, state, _size) do
-    case Map.get(state.pending, id) do
-      {:send, from, _timer} -> reply(state, id, from, result)
+    case Requests.kind(state.requests, id) do
+      :send -> reply(state, id, result)
       # The proxy answers a call that reached it; a failed send fails it here.
-      {:call, from, _timer} when result != :ok -> reply(state, id, from, result)
+      :call when result != :ok -> reply(state, id, result)
       _ -> state
     end
   end
@@ -428,8 +438,8 @@ defmodule Kettlecorn.VM do
     do: %{state | boot: :failed}
 
   defp handle_frame({:proxy_reply, id, result}, state, _size) do
-    case Map.get(state.pending, id) do
-      {:call, from, _timer} -> reply(state, id, from, result)
+    case Requests.kind(state.requests, id) do
+      :call -> reply(state, id, result)
       _ -> state
     end
   end
@@ -498,20 +508,8 @@ defmodule Kettlecorn.VM do
   defp continue(%{failure: nil} = state), do: {:noreply, state}
   defp continue(state), do: down(state, state.failure)
 
-  defp track(state, id, {kind, from}, timeout) do
-    timer =
-      if timeout != :infinity,
-        do: Process.send_after(self(), {:deadline, id}, timeout)
-
-    %{state | pending: Map.put(state.pending, id, {kind, from, timer})}
-  end
-
-  defp reply(state, id, from, result) do
-    {{_kind, _from, timer}, pending} = Map.pop!(state.pending, id)
-    if timer, do: Process.cancel_timer(timer)
-    GenServer.reply(from, result)
-    %{state | pending: pending}
-  end
+  defp reply(state, id, result),
+    do: %{state | requests: Requests.reply(state.requests, id, result)}
 
   defp buffer_output(stream, data, state, cost) do
     state = notify(state, {stream, data}, cost)
@@ -540,12 +538,8 @@ defmodule Kettlecorn.VM do
   end
 
   defp next_id(state) do
-    id = state.next_id
-    next = rem(id + 1, 0x1_0000_0000)
-
-    if Map.has_key?(state.pending, id),
-      do: next_id(%{state | next_id: next}),
-      else: {id, %{state | next_id: next}}
+    {id, requests} = Requests.next_id(state.requests)
+    {id, %{state | requests: requests}}
   end
 
   defp down_reason(_status, %{fatal: fatal}) when fatal != nil, do: {:fatal, fatal}
@@ -582,7 +576,6 @@ defmodule Kettlecorn.VM do
   end
 
   defp fail_all(state, reason) do
-    for {_id, {_kind, from, _timer}} <- state.pending, do: GenServer.reply(from, {:error, reason})
-    %{state | pending: %{}}
+    %{state | requests: Requests.fail_all(state.requests, reason)}
   end
 end

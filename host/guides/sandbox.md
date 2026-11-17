@@ -61,6 +61,11 @@ from its monitor. A linked worker instead needs to handle exits or be prepared
 to restart when the VM fails. These links are host process relationships;
 GenServers running inside the guest have their own supervision tree.
 
+The VM also monitors callers of `eval/3`, `call/4`, and `send/4`. Caller exit
+releases request tracking and capacity, even for an infinite timeout. It does
+not cancel guest work already submitted. Use `stop_with` or stop the VM to
+end that work when the caller leaves.
+
 ## Output and messages
 
 ### Captured and console output
@@ -87,16 +92,19 @@ Stopping a VM leaves already-delivered events in the owner's mailbox. The
 byte budget charges retained input and estimated heap space. Acknowledging
 an event removes it from accounting, so consume its data before acknowledging.
 
-### Input queue
+### Input and pending requests
 
-Host input has a fixed queue budget. Overflow stops the VM; shutdown discards
-queued input.
+Host input has a fixed queue budget. Unanswered `eval/3`, `call/4`, and
+`send/4` requests have a separate `max_pending_requests` limit, including
+requests already transmitted. Replies, deadlines, and caller exits release
+request capacity. Request rejection leaves the VM running.
 
 | Budget | Default | When exceeded |
 |---|---|---|
 | `max_pending_events` | 1,024 unacknowledged events | Stops the VM with `:event_queue_full` |
 | `max_pending_event_bytes` | 64 MiB of estimated retained data | Stops the VM with `:event_queue_full` |
 | Input queue (fixed) | 1,024 frames or 64 MiB plus a frame-length prefix, in addition to the port buffer | Stops the VM with `:input_queue_full` |
+| `max_pending_requests` | 1,024 unanswered requests | Returns `{:error, :request_queue_full}` before transmission |
 | `output_limit` | 1 MiB | Discards additional console buffer data; owner delivery has separate budgets |
 | `max_message_size` | 64 MiB | An oversized frame stops the VM; a term exceeding the decoding budget is dropped |
 
