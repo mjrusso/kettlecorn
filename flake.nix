@@ -65,6 +65,16 @@
         inherit (beamPackages) erlang;
         elixirPkg = beamPackages.elixir;
         wasmtime = pkgs.wasmtime;
+        toolchain = pkgs.callPackage ./nix/toolchain.nix {
+          inherit wasmtime;
+          wasi-libc-src = wasi-libc;
+        };
+        openssl = pkgs.callPackage ./nix/openssl.nix { inherit toolchain; };
+        otpWasi = pkgs.callPackage ./nix/otp.nix {
+          inherit erlang toolchain openssl;
+          otp-src = otp;
+          popcorn-src = popcorn;
+        };
         basePackages = with pkgs; [
           git
           just
@@ -100,6 +110,15 @@
 
       in
       {
+        packages = {
+          default = otpWasi;
+          inherit openssl;
+          otp = otpWasi;
+          inherit (toolchain) resourceDir sysroot compat cc;
+        };
+
+        checks.otp = otpWasi;
+
         checks.stdio = pkgs.runCommand "kettlecorn-stdio-tests"
           { nativeBuildInputs = [ pkgs.stdenv.cc pkgs.python3 erlang ]; }
           ''
