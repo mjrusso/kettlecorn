@@ -129,6 +129,10 @@
               --prefix PATH : ${lib.makeBinPath (with pkgs; [ coreutils gnused gawk ])}
           '';
 
+        release = pkgs.callPackage ./nix/release.nix {
+          inherit runtime version system;
+        };
+
         basePackages = with pkgs; [
           git
           just
@@ -166,7 +170,7 @@
       {
         packages = {
           default = runtime;
-          inherit runtime kettlecorn-run guestDeps openssl launcher;
+          inherit runtime kettlecorn-run guestDeps openssl release launcher;
           otp = otpWasi;
           inherit (toolchain) resourceDir sysroot compat cc;
         };

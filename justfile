@@ -24,6 +24,16 @@ test: test-stdio
 test-stdio:
     python3 c/test/stdio_test.py
 
+# The runtime release archive (as the release workflow builds it), into ./release.
+release-archive:
+    nix build .#release -o release
+
+# Needs a cache write token configured with `cachix authtoken <TOKEN>`;
+# see host/guides/development.md, "Binary cache".
+# Builds the checks, the release archive and the dev shell; uploads them to Cachix.
+cache-push:
+    cachix watch-exec kettlecorn -- sh -c 'nix flake check --accept-flake-config && nix build --accept-flake-config --no-link .#release && nix develop --accept-flake-config -c true'
+
 # After editing guest/hex/mix.exs: refresh mix.lock and the fetchMixDeps hash.
 update-guest-deps:
     #!/usr/bin/env bash
