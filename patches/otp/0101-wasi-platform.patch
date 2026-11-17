@@ -1,0 +1,279 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kettlecorn <kettlecorn@localhost>
+Date: Sat, 14 Nov 2026 20:21:23 -0500
+Subject: [PATCH] WASI platform: shared guards and emulator build hooks
+
+
+diff --git a/erts/emulator/Makefile.in b/erts/emulator/Makefile.in
+index 8593d09..e9e08d1 100644
+--- a/erts/emulator/Makefile.in
++++ b/erts/emulator/Makefile.in
+@@ -1310,6 +1310,8 @@ else
+ BASE_OBJS = $(EMU_OBJS)
+ endif
+ 
++include $(ERL_TOP)/erts/emulator/kettlecorn.mk
++
+ BASE_OBJS += $(COMMON_OBJS) $(RUN_OBJS) $(OS_OBJS) $(EXTRA_BASE_OBJS) \
+ 	$(LTTNG_OBJS) $(DRV_OBJS) $(NIF_OBJS)
+ 
+diff --git a/erts/emulator/beam/erl_bif_ddll.c b/erts/emulator/beam/erl_bif_ddll.c
+index e6b31e3..e991a3a 100644
+--- a/erts/emulator/beam/erl_bif_ddll.c
++++ b/erts/emulator/beam/erl_bif_ddll.c
+@@ -177,7 +177,7 @@ kill_ports_driver_unloaded(DE_Handle *dh)
+  */
+ BIF_RETTYPE erl_ddll_try_load_3(BIF_ALIST_3)
+ {
+-#ifdef __EMSCRIPTEN__
++#ifdef KETTLECORN_WASM
+     Eterm *hp = HAlloc(BIF_P, 3);
+     Eterm error = build_load_error_hp(NULL, ERL_DE_ERROR_NO_DDLL_FUNCTIONALITY);
+ 
+diff --git a/erts/emulator/beam/erl_crash_dump.c b/erts/emulator/beam/erl_crash_dump.c
+index d1e757c..c3e076e 100644
+--- a/erts/emulator/beam/erl_crash_dump.c
++++ b/erts/emulator/beam/erl_crash_dump.c
+@@ -391,7 +391,7 @@ static int write_layered(void *to_arg, char *buf, size_t len) {
+ void
+ erl_crash_dump_v(char *file, int line, const char* fmt, va_list args)
+ {
+-#ifdef __EMSCRIPTEN__
++#ifdef KETTLECORN_WASM
+     erts_fprintf(stderr, "\nBEAM fatal error");
+     if (file != NULL)
+         erts_fprintf(stderr, " in %s:%d", file, line);
+diff --git a/erts/emulator/beam/erl_init.c b/erts/emulator/beam/erl_init.c
+index 9ebb110..f814d6a 100644
+--- a/erts/emulator/beam/erl_init.c
++++ b/erts/emulator/beam/erl_init.c
+@@ -2709,7 +2709,7 @@ erts_exit_vv(int n, int flush, const char *fmt, va_list args1, va_list args2)
+ {
+     system_cleanup(flush);
+ 
+-#ifdef ERTS_EMSCRIPTEN
++#ifdef KETTLECORN_WASM
+     {
+         extern void js_bridge_on_error(const char *, int);
+         int hasMessage = fmt != NULL && *fmt != '\0';
+diff --git a/erts/emulator/beam/erl_nif.c b/erts/emulator/beam/erl_nif.c
+index c61a101..cf0b998 100644
+--- a/erts/emulator/beam/erl_nif.c
++++ b/erts/emulator/beam/erl_nif.c
+@@ -3305,10 +3305,10 @@ int enif_dynamic_resource_call(ErlNifEnv* caller_env,
+ void* enif_dlopen(const char* lib,
+ 		  void (*err_handler)(void*,const char*), void* err_arg)
+ {
+-#ifdef __EMSCRIPTEN__
++#ifdef KETTLECORN_WASM
+     (void)lib;
+     if (err_handler != NULL) {
+-        (*err_handler)(err_arg, "Dynamic loading is not supported in browser");
++        (*err_handler)(err_arg, "Dynamic loading is not supported on WebAssembly");
+     }
+     return NULL;
+ #else
+@@ -3334,11 +3334,11 @@ void* enif_dlopen(const char* lib,
+ void* enif_dlsym(void* handle, const char* symbol,
+ 		 void (*err_handler)(void*,const char*), void* err_arg)
+ {
+-#ifdef __EMSCRIPTEN__
++#ifdef KETTLECORN_WASM
+     (void)handle;
+     (void)symbol;
+     if (err_handler != NULL) {
+-        (*err_handler)(err_arg, "Dynamic loading is not supported in browser");
++        (*err_handler)(err_arg, "Dynamic loading is not supported on WebAssembly");
+     }
+     return NULL;
+ #else
+@@ -4772,10 +4772,10 @@ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
+             is_static = 1;
+         }
+     }
+-#ifdef __EMSCRIPTEN__
++#ifdef KETTLECORN_WASM
+     if (!is_static) {
+         ret = load_nif_error(c_p, "load_failed",
+-                             "Dynamic loading is not supported in browser");
++                             "Dynamic loading is not supported on WebAssembly");
+         goto error;
+     }
+ #endif
+diff --git a/erts/emulator/beam/sys.h b/erts/emulator/beam/sys.h
+index 0d6ae8f..94d8c81 100644
+--- a/erts/emulator/beam/sys.h
++++ b/erts/emulator/beam/sys.h
+@@ -23,6 +23,8 @@
+ #ifndef __SYS_H__
+ #define __SYS_H__
+ 
++#include "kettlecorn_platform.h"
++
+ #if !defined(__GNUC__) || defined(__e2k__)
+ #  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) 0
+ #elif !defined(__GNUC_MINOR__)
+diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/erl_child_setup.c
+index aa5c2e9..679af32 100644
+--- a/erts/emulator/sys/unix/erl_child_setup.c
++++ b/erts/emulator/sys/unix/erl_child_setup.c
+@@ -1,3 +1,7 @@
++/* WASI has no processes, so the child setup helper is never spawned. */
++#ifdef __wasi__
++int main(void) { return 1; }
++#else
+ /*
+  * %CopyrightBegin%
+  *
+@@ -715,3 +719,5 @@ static int forker_hash_init(void)
+ 
+     return 1;
+ }
++
++#endif /* __wasi__ */
+diff --git a/erts/emulator/sys/unix/erl_unix_sys.h b/erts/emulator/sys/unix/erl_unix_sys.h
+index a63f0b4..b0db58e 100644
+--- a/erts/emulator/sys/unix/erl_unix_sys.h
++++ b/erts/emulator/sys/unix/erl_unix_sys.h
+@@ -46,7 +46,9 @@
+ #include <fcntl.h>
+ #include "erl_errno.h"
+ #include <signal.h>
++#ifndef __wasi__ /* setjmp needs the Wasm exception handling proposal */
+ #include <setjmp.h>
++#endif
+ 
+ #ifdef HAVE_SYS_SOCKETIO_H
+ #   include <sys/socketio.h>
+@@ -403,7 +405,7 @@ extern int exit_async(void);
+ 
+ #define ERTS_EXIT_AFTER_DUMP _exit
+ 
+-#if !defined(__APPLE__) && !defined(__MACH__)
++#if !defined(__APPLE__) && !defined(__MACH__) && !defined(__wasi__)
+ /* Some OS X versions do not allow (ab)using signal handlers like this */
+ #define ERTS_HAVE_TRY_CATCH 1
+ 
+diff --git a/erts/emulator/sys/unix/sys.c b/erts/emulator/sys/unix/sys.c
+index da1a2a6..f4d248c 100644
+--- a/erts/emulator/sys/unix/sys.c
++++ b/erts/emulator/sys/unix/sys.c
+@@ -105,7 +105,7 @@ static erts_atomic32_t have_prepared_crash_dump;
+ erts_atomic_t sys_misc_mem_sz;
+ 
+ static void smp_sig_notify(int signum);
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+ static int sig_notify_fds[2] = {-1, -1};
+ #endif
+ 
+@@ -114,7 +114,9 @@ static int sig_suspend_fds[2] = {-1, -1};
+ #endif
+ 
+ 
++#ifdef ERTS_HAVE_TRY_CATCH
+ jmp_buf erts_sys_sigsegv_jmp;
++#endif
+ 
+ static int crashdump_companion_cube_fd = -1;
+ 
+@@ -386,6 +388,7 @@ erts_sys_pre_init(void)
+ 
+     erts_atomic_init_nob(&sys_misc_mem_sz, 0);
+ 
++#ifndef __wasi__ /* WASI: fds 0-2 are given by the embedder; no /dev/null */
+     {
+       /*
+        * Unfortunately we depend on fd 0,1,2 in the old shell code.
+@@ -403,6 +406,7 @@ erts_sys_pre_init(void)
+       }
+       close(fd);
+     }
++#endif
+ 
+     /* We need a file descriptor to close in the crashdump creation.
+      * We close this one to be sure we can get a fd for our real file ...
+@@ -591,7 +595,7 @@ int erts_sys_prepare_crash_dump(int secs)
+     return prepare_crash_dump(secs);
+ }
+ 
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+ static void signal_notify_requested(Eterm type) {
+     Process* p = NULL;
+     Eterm msg, *hp;
+@@ -727,7 +731,7 @@ signalterm_to_signum(Eterm signal)
+     }
+ }
+ 
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+ static ERTS_INLINE Eterm
+ signum_to_signalterm(int signum)
+ {
+@@ -1109,14 +1113,14 @@ erl_debug(char* fmt, ...)
+ 
+ #endif /* DEBUG */
+ 
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+ static erts_tid_t sig_dispatcher_tid;
+ #endif
+ 
+ static void
+ smp_sig_notify(int signum)
+ {
+-#ifdef ERTS_EMSCRIPTEN
++#ifdef KETTLECORN_WASM
+     (void)signum; // No signal handling in Emscripten/Wasm
+ #else
+     int res;
+@@ -1134,7 +1138,7 @@ smp_sig_notify(int signum)
+ #endif
+ }
+ 
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+ static void *
+ signal_dispatcher_thread_func(void *unused)
+ {
+@@ -1263,6 +1267,8 @@ erts_sys_main_thread(void)
+     }
+     emscripten_force_exit(erts_halt_code);
+     return;
++#elif defined(__wasi__)
++    kettlecorn_wait_for_halt(&erts_halt_code);
+ #endif
+ 
+     /* Wait for a signal to arrive... */
+@@ -1319,7 +1325,7 @@ erl_sys_args(int* argc, char** argv)
+ 
+     max_files = erts_check_io_max_files();
+ 
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+     init_smp_sig_notify();
+     init_smp_sig_suspend();
+ #endif
+diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
+index 1cb2c12..3a58020 100644
+--- a/erts/emulator/sys/unix/sys_drivers.c
++++ b/erts/emulator/sys/unix/sys_drivers.c
+@@ -169,7 +169,7 @@ typedef struct driver_data {
+ void
+ erl_sys_late_init(void)
+ {
+-#ifndef ERTS_EMSCRIPTEN
++#ifndef KETTLECORN_WASM
+     SysDriverOpts opts = {0};
+     Port *port;
+ 
+@@ -483,7 +483,7 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+     char *wd, *cwd;
+     int ifd[2], ofd[2], stderrfd;
+ 
+-#ifdef ERTS_EMSCRIPTEN
++#ifdef KETTLECORN_WASM
+     return ERL_DRV_ERROR_BADARG;
+ #endif
+ 

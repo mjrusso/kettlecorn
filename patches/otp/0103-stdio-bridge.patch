@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kettlecorn <kettlecorn@localhost>
+Date: Sat, 14 Nov 2026 20:21:23 -0500
+Subject: [PATCH] Stdio bridge: wasm NIF and TTY hooks
+
+
+diff --git a/erts/emulator/nifs/common/prim_tty_nif.c b/erts/emulator/nifs/common/prim_tty_nif.c
+index 4aba419..2485471 100644
+--- a/erts/emulator/nifs/common/prim_tty_nif.c
++++ b/erts/emulator/nifs/common/prim_tty_nif.c
+@@ -71,6 +71,9 @@
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten/emscripten.h>
+ #endif
++#ifdef __wasi__
++#include "kettlecorn_nif.h"
++#endif
+ 
+ #if defined IOV_MAX
+ #define MAXIOV IOV_MAX
+@@ -739,7 +742,9 @@ static ERL_NIF_TERM tty_read_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
+         }
+     }
+ #else
+-#ifdef __EMSCRIPTEN__
++#ifdef __wasi__
++    return kettlecorn_stdin_read(env, (size_t)n);
++#elif defined(__EMSCRIPTEN__)
+     {
+         size_t first;
+         size_t consumed;
+@@ -778,7 +783,7 @@ static ERL_NIF_TERM tty_read_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
+ #endif
+ #endif
+     debug("select on %d\r\n",select_event);
+-#ifndef __EMSCRIPTEN__
++#ifndef KETTLECORN_WASM
+     enif_select(env, select_event, ERL_NIF_SELECT_READ, tty, NULL, argv[1]);
+ #endif
+     if (res == bin.size) {
+@@ -1190,6 +1195,9 @@ static ERL_NIF_TERM tty_create_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM
+ 
+     enif_set_pid_undefined(&tty->self);
+     enif_set_pid_undefined(&tty->reader);
++#ifdef __wasi__
++    tty->tty = disabled;
++#endif
+ #ifdef __EMSCRIPTEN__
+     tty->tty = disabled;
+     tty->select_env = enif_alloc_env();
+@@ -1229,7 +1237,7 @@ static ERL_NIF_TERM tty_init_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
+         return atom_ok;
+     }
+ 
+-#ifdef __EMSCRIPTEN__
++#ifdef KETTLECORN_WASM
+     tty->tty = enif_is_identical(input, atom_raw) ? enabled : disabled;
+     enif_self(env, &tty->self);
+     enif_monitor_process(env, tty, &tty->self, NULL);
+@@ -1316,7 +1324,9 @@ static ERL_NIF_TERM tty_window_size_nif(ErlNifEnv* env, int argc, const ERL_NIF_
+     if (!enif_get_resource(env, argv[0], tty_rt, (void **)&tty))
+         return enif_make_badarg(env);
+     {
+-#ifdef __EMSCRIPTEN__
++#ifdef __wasi__
++        return kettlecorn_tty_window_size(env, DEF_WIDTH, DEF_HEIGHT);
++#elif defined(__EMSCRIPTEN__)
+         enif_mutex_lock(popcorn_stdin.lock);
+         width = popcorn_stdin.columns;
+         height = popcorn_stdin.rows;
+@@ -1371,7 +1381,10 @@ static ERL_NIF_TERM tty_select_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM
+     using_oldshell = 0;
+ #endif
+     debug("Select on %d\r\n", tty->ifd);
+-#ifdef __EMSCRIPTEN__
++#ifdef __wasi__
++    kettlecorn_stdin_select(env, tty, argv[1]);
++    enif_self(env, &tty->reader);
++#elif defined(__EMSCRIPTEN__)
+     enif_mutex_lock(popcorn_stdin.lock);
+     enif_clear_env(tty->select_env);
+     tty->select_ref = enif_make_copy(tty->select_env, argv[1]);
+@@ -1397,6 +1410,9 @@ static void tty_monitor_down(ErlNifEnv* caller_env, void* obj, ErlNifPid* pid, E
+         tcsetattr(tty->ifd, TCSANOW, &tty->tty_rmode);
+     }
+ #endif
++#ifdef __wasi__
++    kettlecorn_stdin_deselect(tty, pid);
++#else
+     if (enif_compare_pids(pid, &tty->reader) == 0) {
+ #ifdef __EMSCRIPTEN__
+         enif_mutex_lock(popcorn_stdin.lock);
+@@ -1407,6 +1423,7 @@ static void tty_monitor_down(ErlNifEnv* caller_env, void* obj, ErlNifPid* pid, E
+         enif_select(caller_env, tty->ifd, ERL_NIF_SELECT_STOP, tty, NULL, atom_undefined);
+ #endif
+     }
++#endif
+ }
+ 
+ static void tty_select_stop(ErlNifEnv* caller_env, void* obj, ErlNifEvent event, int is_direct_call) {
+@@ -1419,7 +1436,9 @@ static void tty_select_stop(ErlNifEnv* caller_env, void* obj, ErlNifEvent event,
+ 
+ static void tty_dtor(ErlNifEnv* env, void* obj) {
+     (void)env;
+-#ifdef __EMSCRIPTEN__
++#ifdef __wasi__
++    kettlecorn_stdin_deselect(obj, NULL);
++#elif defined(__EMSCRIPTEN__)
+     TTYResource *tty = obj;
+ 
+     enif_mutex_lock(popcorn_stdin.lock);
+diff --git a/erts/emulator/nifs/common/wasm_nif.c b/erts/emulator/nifs/common/wasm_nif.c
+index 086797f..e41c3ac 100644
+--- a/erts/emulator/nifs/common/wasm_nif.c
++++ b/erts/emulator/nifs/common/wasm_nif.c
+@@ -26,6 +26,10 @@
+ #include "erl_nif.h"
+ #include "sys.h"
+ 
++#ifndef ERTS_EMSCRIPTEN
++#include "kettlecorn_wasm_nif.c"
++#else
++
+ #include <limits.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+@@ -649,3 +653,5 @@ int sendVmMessage(int target_kind, const char *target_name, int target_name_len,
+   abort();
+ }
+ #endif
++
++#endif /* ERTS_EMSCRIPTEN */

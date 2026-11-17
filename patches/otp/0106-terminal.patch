@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kettlecorn <kettlecorn@localhost>
+Date: Sat, 14 Nov 2026 20:21:23 -0500
+Subject: [PATCH] Terminal: raw-mode prim_tty without terminfo
+
+
+diff --git a/lib/kernel/src/prim_tty.erl b/lib/kernel/src/prim_tty.erl
+index 9d2d9a7..1493393 100644
+--- a/lib/kernel/src/prim_tty.erl
++++ b/lib/kernel/src/prim_tty.erl
+@@ -331,18 +331,8 @@ options(UserOptions) ->
+ init(State, ssh) ->
+     State#state{ xn = true };
+ init(State, {unix,_}) ->
+-
+-    State#state.have_termcap orelse error(enotsup),
+-
+-    Cols = case tigetnum("co") of
+-               {ok, Cs} -> Cs;
+-               _ -> (#state{})#state.cols
+-           end,
+-
+-    State#state{
+-      cols = Cols,
+-      xn = tigetflag("xn")
+-     };
++    %% OTP is built without terminfo; use the default ANSI geometry.
++    State;
+ init(State, {win32, _}) ->
+     State#state{
+       %% position = false,

@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kettlecorn <kettlecorn@localhost>
+Date: Sat, 14 Nov 2026 20:21:23 -0500
+Subject: [PATCH] Cooperative threads: scheduler hooks and mutex spinlocks
+
+
+diff --git a/erts/emulator/beam/erl_process.c b/erts/emulator/beam/erl_process.c
+index 0201ea3..f8b30f7 100644
+--- a/erts/emulator/beam/erl_process.c
++++ b/erts/emulator/beam/erl_process.c
+@@ -3461,6 +3461,10 @@ scheduler_wait(int *fcalls, ErtsSchedulerData *esdp, ErtsRunQueue *rq)
+ 
+     ERTS_LC_ASSERT(erts_lc_runq_is_locked(rq));
+ 
++#ifdef __wasi__
++    kettlecorn_scheduler_wait();
++#endif
++
+     flgs = sched_prep_spin_wait(ssi);
+     if (flgs & ERTS_SSI_FLG_SUSPENDED) {
+ 	/* Go suspend instead... */
+@@ -9621,6 +9625,10 @@ Process *erts_schedule(ErtsSchedulerData *esdp, Process *p, int calls)
+ 
+     ASSERT(calls >= 0);
+ 
++#ifdef __wasi__
++    kettlecorn_scheduler_yield();
++#endif
++
+ #ifdef USE_VM_PROBES
+     if (p != NULL && DTRACE_ENABLED(process_unscheduled)) {
+         DTRACE_CHARBUF(process_buf, DTRACE_TERM_BUF_SIZE);
+diff --git a/erts/include/internal/ethread.h b/erts/include/internal/ethread.h
+index db4b487..7788a0b 100644
+--- a/erts/include/internal/ethread.h
++++ b/erts/include/internal/ethread.h
+@@ -415,6 +415,13 @@ extern ethr_runtime_t ethr_runtime__;
+ 
+ #include "ethr_atomics.h" /* The atomics API */
+ 
++#if defined(__wasi__)
++/* Cooperative threads (wasm32-wasip3): a spinning thread never lets the
++ * thread it waits for run, so every spin iteration yields. */
++#  include <sched.h>
++#  define ETHR_SPIN_BODY ((void) sched_yield())
++#endif
++
+ #if defined(__GNUC__)
+ #  ifndef ETHR_SPIN_BODY
+ #    if defined(__i386__) || defined(__x86_64__)
+@@ -461,8 +468,9 @@ extern ethr_runtime_t ethr_runtime__;
+ #  endif
+ #endif
+ 
+-#if defined(VALGRIND)
+-/* mutex as fallback for spinlock for VALGRIND. */
++#if defined(VALGRIND) || defined(__wasi__)
++/* mutex as fallback for spinlock for VALGRIND, and for cooperative threads
++ * where spinning on a lock held by a suspended thread would never end. */
+ #  undef ETHR_HAVE_NATIVE_SPINLOCKS
+ #  undef ETHR_HAVE_NATIVE_RWSPINLOCKS
+ #else
