@@ -133,6 +133,14 @@
           inherit runtime version system;
         };
 
+        versionsDoc = ./host/guides/development.md;
+        versions = pkgs.callPackage ./nix/versions.nix {
+          inherit erlang elixirVersion popcorn wasi-libc wasmtime openssl nixpkgs;
+          rustc = pkgs.rustc;
+          otp = otpWasi;
+          llvm = toolchain.llvm;
+        };
+
         basePackages = with pkgs; [
           git
           just
@@ -170,7 +178,7 @@
       {
         packages = {
           default = runtime;
-          inherit runtime kettlecorn-run guestDeps openssl release launcher;
+          inherit runtime kettlecorn-run guestDeps openssl versions release launcher;
           otp = otpWasi;
           inherit (toolchain) resourceDir sysroot compat cc;
         };
@@ -194,6 +202,15 @@
             python3 ${./c}/test/stdio_test.py
             touch $out
           '';
+
+        checks.docs-versions = pkgs.runCommand "kettlecorn-docs-versions" { } ''
+          sed -n '/^<!-- versions/,/^<!-- \/versions -->/p' ${versionsDoc} > current.md
+          if ! diff -u current.md ${versions}; then
+            echo "The development guide's versions table is out of date: run just docs-versions" >&2
+            exit 1
+          fi
+          touch $out
+        '';
 
         devShells = {
           ci = pkgs.mkShell {

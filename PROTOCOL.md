@@ -132,6 +132,9 @@ For the tuple form, the delivered message is `{:wasm, {token, payload}}`;
 this routes host-call replies. The VM answers every `send` with a
 `send_result` frame carrying the same `id`.
 
+Guest PID handles on the host include the originating VM PID. They cannot be
+used with another VM; that identity is host metadata and is not sent on the wire.
+
 `kind` 2 addresses a registered name and delivers `{:wasm, {id, payload}}`,
 using the enclosing send frame's ID. Calls and casts use this kind to reach
 `Kettlecorn.Proxy` (`:kettlecorn_proxy`). A call's payload is:
@@ -191,12 +194,9 @@ Unread stdin never blocks delivery of other host frames. See the
 OTP major release string), and `elixir` (its exact version string). The map
 must contain exactly these three fields with matching values. The host checks
 the original bundle against the runtime manifest before copying.
-`Kettlecorn.Boot` is authoritative for the copied bundle: it checks metadata
-inside the guest before adding cooked code paths or loading configuration.
+`Kettlecorn.Boot` checks the copied metadata inside the guest before adding
+cooked code paths or loading configuration.
 The guest's runtime manifest is available at `/manifest.json`.
-
-Guest PID handles on the host include the originating VM PID. They cannot be
-used with another VM; that identity is host metadata and is not sent on the wire.
 
 ## Native root population
 

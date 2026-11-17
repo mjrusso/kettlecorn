@@ -1,0 +1,97 @@
+# Releasing
+
+A release has two parts with the same version:
+
+- **Platform runtime archives** `kettlecorn-runtime-<version>-<system>.tar.gz`,
+  attached to GitHub release `v<version>` for `x86_64-linux`, `aarch64-linux`
+  and `aarch64-darwin`. Each holds the emulators, guest root, manifest,
+  licenses, native `bin/kettlecorn-launch` and Bash `bin/kettlecorn-run`.
+  Linux launchers are static musl binaries; Python and Wasmtime are not required.
+- **The Hex package** `kettlecorn` (from `host/`): the host library,
+  `mix kettlecorn.cook` and `mix kettlecorn.install`. It doesn't contain the
+  runtime. `mix kettlecorn.install` downloads the archive and checks it
+  against the SHA-256 in the package's `priv/checksums.txt`.
+
+The version is in `host/VERSION`; the runtime's `manifest.json` records it,
+along with the protocol version (`host/PROTOCOL_VERSION`). The library refuses
+a runtime with another protocol version. Bump the protocol version for any
+incompatible change to frames, envelopes, guest events, or proxy messages
+(`PROTOCOL.md`). Also bump it for incompatible changes to the contract
+between launchers and `Kettlecorn.Boot`, including Boot's arguments and a
+cooked app's `/app` layout.
+
+Run the `just` recipes in `nix develop`, from the repository root.
+
+## Steps
+
+1. **Prepare.** Set the version in `host/VERSION`, add a `## <version>`
+   entry to `host/CHANGELOG.md`, update the dependency snippets in
+   the root and package READMEs, `examples/README.md`, `host/guides/`,
+   the Mix task examples, and every `Mix.install` cell in
+   `host/notebooks/*.livemd` if the major or minor version changed. Run
+   `just docs-versions`. `nix flake check` and `just lint typecheck docs` must
+   pass. Commit and push `main`.
+
+2. **Tag and push.**
+
+   ```sh
+   git tag v<version>
+   git push origin v<version>
+   ```
+
+   The tag starts the `kettlecorn` workflow. Its `release` job waits for
+   `nix flake check` and `just test-apps` on Linux and macOS, and for
+   `just lint typecheck docs` on Linux. It then checks that the tag matches
+   `host/VERSION`, builds each platform archive natively (`nix build .#release`) and publishes
+   the GitHub release only after all archives and their `.sha256` files exist. Check the release:
+   `gh release view v<version>`.
+
+3. **Record the checksum.**
+
+   ```sh
+   just release-checksums <version>
+   ```
+
+   This downloads all three platform archives, verifies their published
+   `.sha256` files, and writes their SHA-256s to `host/priv/checksums.txt`.
+   Commit that file and push `main`. The tag does not need the file; the Hex
+   package does. A local `just release-archive` builds the current platform's
+   archive. Native macOS outputs must be built on macOS.
+
+4. **Check the package.** From `host/`, with `KETTLECORN_RUNTIME` unset:
+
+   ```sh
+   mix kettlecorn.install --force
+   mix docs --warnings-as-errors
+   python3 scripts/check_doc_links.py doc
+   mix hex.build
+   ```
+
+   `mix kettlecorn.install` must download and verify the archive.
+   `mix hex.build` lists the package's files: `lib`, `priv/checksums.txt`,
+   `mix.exs`, `VERSION`, `PROTOCOL_VERSION`, `README.md`, `CHANGELOG.md`, `LICENSE`,
+   `.formatter.exs`, the notebooks in `notebooks/`, and the guides in `guides/`.
+   Check the generated documentation's navigation and links before publishing.
+
+   Test the extracted runtime archive on each target platform. On Linux,
+   also boot it in a minimal non-Nix container without Python or Wasmtime.
+
+5. **Publish.** Authenticate with `mix hex.user auth` once per machine,
+   then, from `host/`:
+
+   ```sh
+   mix hex.publish
+   ```
+
+   HexDocs links the source to the tag, so publish after pushing it.
+
+6. **Check the notebooks.** Outside the checkout, open each notebook in
+   `host/notebooks` in Livebook and run it: its setup cells install the
+   published package and the released runtime.
+
+## Wasmtime updates
+
+When a Wasmtime release fixes a security issue, update nixpkgs and all three
+exact Wasmtime dependencies in `launcher/Cargo.toml`, refresh `Cargo.lock`,
+release Kettlecorn, and identify the security fix in the CHANGELOG. Users of
+`mix kettlecorn.install` receive the fix through that release.

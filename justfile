@@ -118,6 +118,11 @@ bench-startup:
 bench-workloads:
     {{runtime}} && cd host && MIX_ENV=bench mix run bench/workloads.exs
 
+# The host library's documentation (ExDoc), into host/doc.
+docs:
+    cd host && mix docs --warnings-as-errors
+    python3 host/scripts/check_doc_links.py host/doc
+
 # The runtime release archive (as the release workflow builds it), into ./release.
 release-archive:
     nix build .#release -o release
@@ -163,3 +168,37 @@ update-guest-deps:
     fi
     sed -i "s#hash = \"\";#hash = \"$hash\";#" nix/guest-deps.nix
     echo "fetchMixDeps hash: $hash"
+
+# Update pinned flake inputs and regenerate the versions table.
+update:
+    nix flake update
+    just docs-versions
+
+# Update Popcorn to its latest commit; run nix flake check afterward.
+update-popcorn:
+    nix flake update popcorn
+    just docs-versions
+
+# Update Elixir to the latest stable release; a new minor needs its Nix builder.
+update-elixir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    latest=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir 'v*' \
+      | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+    sed -i -E "s#github:elixir-lang/elixir/v[0-9.]+#github:elixir-lang/elixir/${latest}#" flake.nix
+    nix flake lock
+    just docs-versions
+    echo "Elixir ${latest}"
+
+# Updates the development guide's generated versions table.
+docs-versions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    guide=host/guides/development.md
+    table=$(nix build .#versions --no-link --print-out-paths)
+    awk -v table="$table" '
+      /^<!-- versions/ { while ((getline line < table) > 0) print line; skip = 1; next }
+      /^<!-- \/versions -->/ { skip = 0; next }
+      !skip
+    ' "$guide" > "$guide.new"
+    mv "$guide.new" "$guide"

@@ -6,6 +6,10 @@ defmodule Kettlecorn.MixProject do
   # it's the runtime's version.
   @version "VERSION" |> File.read!() |> String.trim()
   @source_url "https://github.com/mjrusso/kettlecorn"
+  @notebooks ~w(notebooks/getting-started.livemd notebooks/working-with-guests.livemd notebooks/use-cases.livemd notebooks/network.livemd notebooks/guest-data.livemd notebooks/lua.livemd notebooks/internals.livemd)
+  @user_guides ~w(guides/sandbox.md guides/running-applications.md guides/guest-api.md)
+  @contributor_guides ~w(guides/architecture.md guides/development.md guides/performance.md)
+  @guides @user_guides ++ @contributor_guides
 
   def project do
     [
@@ -16,7 +20,34 @@ defmodule Kettlecorn.MixProject do
       deps: deps(),
       dialyzer: [plt_add_apps: [:mix, :ex_unit]],
       description: "Run untrusted Elixir and Erlang in WebAssembly VMs",
+      package: package(),
+      docs: docs(),
       source_url: @source_url
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => @source_url},
+      files:
+        ~w(lib priv mix.exs VERSION PROTOCOL_VERSION README.md CHANGELOG.md LICENSE .formatter.exs) ++
+          @notebooks ++ @guides
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"] ++ @notebooks ++ @guides ++ ["CHANGELOG.md"],
+      groups_for_extras: [
+        Notebooks: @notebooks,
+        Guides: @user_guides,
+        Contributing: @contributor_guides,
+        Reference: ["CHANGELOG.md"]
+      ],
+      source_ref: "v#{@version}",
+      source_url_pattern: "#{@source_url}/blob/v#{@version}/host/%{path}#L%{line}"
     ]
   end
 

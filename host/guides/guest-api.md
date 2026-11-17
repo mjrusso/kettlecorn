@@ -1,0 +1,154 @@
+# Guest API
+
+These modules run **inside the guest VM**. They ship in the runtime's
+`kettlecorn_guest` application; adding the host Hex package to a project
+does not make them available on the host.
+
+The **host** is your Elixir application. The **guest** is the OTP system in
+Wasmtime. The **runtime** contains the native launcher, WebAssembly emulators,
+and the guest's OTP, Elixir, and library files. A **cooked application** is a
+compiled Mix application and its dependencies, packaged for that guest.
+
+For executable examples, see [Working with guest VMs](../notebooks/working-with-guests.livemd)
+and [Use cases](../notebooks/use-cases.livemd). The host functions are documented
+in `Kettlecorn`.
+
+## Messages to the host
+
+`Kettlecorn.Host.send(term)` returns `:ok`. With `owner: pid` set when
+starting the VM, the owner receives:
+
+```elixir
+{:kettlecorn, vm, {:message, term}}
+```
+
+The host decodes `term` as untrusted data through `Kettlecorn.ETF`. Delivery
+has a bounded outstanding budget with host acknowledgments; see
+[output and messages](sandbox.md#output-and-messages).
+
+In the other direction, `Kettlecorn.send/4` delivers `{:wasm, payload}` to a
+guest process, addressed by its registered name or a `Kettlecorn.Pid`
+received from that VM.
+
+## Host calls
+
+`Kettlecorn.Host.call(name, args, opts)` asks the host to perform
+an operation. `name` is a string, `args` defaults to `%{}`, and `opts` defaults
+to `[]`. `args` must be a map. The `:timeout` option is in milliseconds and
+defaults to 5000; it also accepts `:infinity`.
+The guest waits while the owner handles:
+
+```elixir
+{:kettlecorn, vm, {:host_call, reply_to, name, args}}
+```
+
+The owner checks the name and arguments, then calls
+`Kettlecorn.reply(vm, reply_to, result)`. `result` must be `{:ok, value}` or
+`{:error, binary_reason}`. The guest receives that tuple unchanged.
+An unanswered call returns `{:error, :timeout}`.
+With no VM owner configured, the host replies `{:error, "no host handler"}`.
+
+The guest decodes host payloads without creating atoms. A reply containing
+an atom absent from the guest is rejected and can cause the call to time
+out. Prefer strings for application-defined names and error reasons.
+`Kettlecorn.reply/3` queues a reply without confirming delivery.
+
+Under `kettlecorn-run`, there is no host application to handle these events:
+`Kettlecorn.Host.send/1` is a no-op and host calls time out.
+
+## HTTP access
+
+Start a VM with `http: true`, or use `kettlecorn-run --http`, to enable
+`Kettlecorn.HTTP`. Wasmtime makes these requests through `wasi:http` and
+verifies TLS with its compiled Mozilla root CA list. The `:cacerts` option
+does not change these roots. This grant permits any reachable destination;
+see [network grants](sandbox.md#network-grants).
+
+`Kettlecorn.HTTP.available?()` returns whether HTTP is enabled.
+
+### Buffered requests
+
+`Kettlecorn.HTTP.request(method, url, opts)` reads the whole response.
+`opts` defaults to `[]`:
+
+```elixir
+{:ok, %{status: 200, headers: headers, body: body}} =
+  Kettlecorn.HTTP.request(:get, "https://example.com/")
+```
+
+`method` is an atom or string; `url` is a string or `URI`. The result is
+`{:ok, %{status: integer, headers: [{name, value}], body: binary}}` or
+`{:error, reason}`. Errors include `:unsupported` without the HTTP grant,
+`:invalid_url`, and transport failures such as `:connection_refused`.
+The response body is held in guest memory.
+
+| Option | Value | Default |
+|---|---|---|
+| `:headers` | List of `{name, value}` string pairs | `[]` |
+| `:body` | Request body as iodata | No body |
+| `:connect_timeout` | Connection timeout in milliseconds | `30000` |
+| `:receive_timeout` | Maximum wait for the response head and for each body read, in milliseconds | `15000` |
+
+Both timeout options accept `:default` or integer milliseconds from `0` through
+`18_446_744_073_709`. `:default` selects the defaults above; zero requests an
+immediate timeout. `:infinity` returns `{:error, :unsupported_timeout}` before
+sending a request because wasi:http cannot disable timeouts. Other values raise
+`ArgumentError`.
+
+The receive timeout is per read. Use a VM lifetime limit to bound the whole
+request. The direct HTTP API returns headers and body bytes; Req provides
+redirect handling and decompression.
+
+### Streaming responses
+
+`Kettlecorn.HTTP.stream(method, url, acc, fun, opts)` uses the same
+request options, with `opts` defaulting to `[]`. It calls `fun.(event, acc)`
+with these events in order:
+
+1. `{:status, status}`
+2. `{:headers, headers}`
+3. `{:data, chunk}` for each body chunk
+
+The callback returns `{:cont, acc}` to continue or `{:halt, acc}` to stop.
+The function returns `{:ok, acc}` on completion or an early halt, and
+`{:error, reason, acc}` on a transport failure, with the accumulator from
+before that failure. The body handle is closed on completion, early halt,
+or a callback exception; callback exceptions propagate.
+
+This guest example counts response bytes without retaining the body:
+
+```elixir
+Kettlecorn.HTTP.stream(:get, "https://example.com/", 0, fn
+  {:data, chunk}, bytes -> {:cont, bytes + byte_size(chunk)}
+  _event, bytes -> {:cont, bytes}
+end)
+```
+
+## Req adapter
+
+Req ships in the runtime. With `http: true`, the guest installs
+`Kettlecorn.HTTP.ReqAdapter` as Req's default adapter:
+
+```elixir
+Req.get!("https://example.com/").body
+```
+
+With only `network: true`, Req uses Finch and Mint over guest sockets.
+With both grants, the HTTP adapter takes precedence. Without either grant,
+requests fail. [HTTP and Req](running-applications.md#http-and-req) describes
+the certificates and grant behavior.
+
+Req's `:receive_timeout` and `connect_options: [timeout: value]` follow the
+timeout rules above. With `:infinity`, `Req.get/2` returns
+`{:error, %Req.TransportError{reason: :unsupported_timeout}}`; `Req.get!/2`
+raises that exception.
+
+The HTTP adapter supports `:into` with a callback function or a collectable.
+It does not support `into: :self`. Request bodies supplied as enumerables are
+collected before sending. Transport errors become `Req.TransportError`
+exceptions. Collectables receive `:done` on success and `:halt` on transport
+errors or exceptions; exceptions propagate after cleanup.
+
+The implementation and source docstrings are in
+[`guest/lib/kettlecorn/host.ex`](https://github.com/mjrusso/kettlecorn/blob/main/guest/lib/kettlecorn/host.ex)
+and [`guest/lib/kettlecorn/http.ex`](https://github.com/mjrusso/kettlecorn/blob/main/guest/lib/kettlecorn/http.ex).
