@@ -1,0 +1,10 @@
+{application, kettlecorn_guest,
+ [{description, "Kettlecorn guest: boot, host bridge (calls, casts, host calls), evaluator, wasi:http"},
+  {vsn, "@VERSION@"},
+  {modules, []},
+  {registered, [kettlecorn_evaluator, kettlecorn_proxy]},
+  {applications, [kernel, stdlib, elixir, logger, req]},
+  %% Loaded (if present) before this app, so its config isn't reset after
+  %% the default adapter is installed.
+  {optional_applications, [req]},
+  {mod, {'Elixir.Kettlecorn.GuestApplication', []}}]}.
