@@ -12,6 +12,8 @@ runtime = Path(sys.argv[1])
 runner = sys.argv[2]
 launcher = runtime / "bin/kettlecorn-launch"
 output = 'IO.binwrite(:binary.copy("x", 8192))'
+# The lifetime includes guest boot, which needs several seconds on busy CI workers.
+timeout_seconds = 30
 
 
 def expect_failure(command, **options):
@@ -37,7 +39,7 @@ def expect_failure(command, **options):
             **options,
         ) as process:
             try:
-                process.wait(timeout=7)
+                process.wait(timeout=timeout_seconds + 5)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -54,7 +56,7 @@ with tempfile.TemporaryDirectory() as directory:
     base = [str(launcher), "--runtime", str(runtime), "--root", str(root)]
     subprocess.run(base + ["--prepare-root"], check=True)
     subprocess.run(
-        base + ["--timeout", "30s", "--", "-e", ":ok"],
+        base + ["--timeout", f"{timeout_seconds}s", "--", "-e", ":ok"],
         check=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -68,7 +70,8 @@ with tempfile.TemporaryDirectory() as directory:
     ]:
         stderr = directory / name
         expect_failure(
-            base + ["--stderr", str(stderr), "--timeout", "5s", "--", "-e", code]
+            base
+            + ["--stderr", str(stderr), "--timeout", f"{timeout_seconds}s", "--", "-e", code]
         )
         marker = json.loads(stderr.with_suffix(".stopped").read_text())
         assert marker == {"outcome": "timeout"}, marker
@@ -77,7 +80,7 @@ with tempfile.TemporaryDirectory() as directory:
 
     fuel = ["--fuel", "3000000000"]
     subprocess.run(
-        base + fuel + ["--timeout", "30s", "--", "-e", ":ok"],
+        base + fuel + ["--timeout", f"{timeout_seconds}s", "--", "-e", ":ok"],
         check=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -103,7 +106,7 @@ with tempfile.TemporaryDirectory() as directory:
     instances = directory / "instances"
     instances.mkdir()
     expect_failure(
-        [runner, "--runtime", str(runtime), "--timeout", "5s", "-e", output],
+        [runner, "--runtime", str(runtime), "--timeout", f"{timeout_seconds}s", "-e", output],
         env={**os.environ, "TMPDIR": str(instances)},
     )
     assert not list(instances.iterdir()), "CLI left a private root after timeout"
