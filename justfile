@@ -15,18 +15,73 @@ build:
 run *args:
     nix run .#kettlecorn-run -- {{args}}
 
+# Run example scripts except 06_network.exs, which needs a server.
+examples:
+    nix run .#kettlecorn-run -- examples/01_hello.exs one two
+    nix run .#kettlecorn-run -- examples/02_processes.exs
+    nix run .#kettlecorn-run -- examples/03_genserver.exs
+    printf 'the fox and the dog\nthe end\n' | nix run .#kettlecorn-run -- examples/04_stdin.exs
+    -nix run .#kettlecorn-run -- --timeout 2s examples/05_runaway.exs
+
 # Interactive IEx in the sandbox (line editing, history, completion).
 iex *args:
     nix run .#iex -- {{args}}
+
+# Build all cooked example apps used by the host tests.
+build-examples:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{runtime}}
+    for project in examples/apps/*/mix.exs; do
+      just _cook-example "$(basename "$(dirname "$project")")" "$KETTLECORN_RUNTIME"
+    done
+
+cook-example name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{runtime}}
+    just _cook-example {{quote(name)}} "$KETTLECORN_RUNTIME"
+
+_cook-example name runtime_path:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    task_root=$PWD
+    export KETTLECORN_RUNTIME={{quote(runtime_path)}}
+    cd "examples/apps/"{{quote(name)}}
+    MIX_ENV=prod mix deps.get --only prod
+    MIX_ENV=prod mix kettlecorn.cook --out "$task_root/_kettlecorn/examples/"{{quote(name)}}
+
+[positional-arguments]
+example name *args="--iex": (cook-example name)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    task_example=$1
+    shift
+    nix run .#kettlecorn-run -- --app "_kettlecorn/examples/$task_example" "$@"
+
+# The host-library demo: eval, GenServer calls, messages, host calls, limits.
+demo:
+    {{runtime}} && cd host && mix run ../examples/host_demo.exs
 
 # An IEx session with the host library, ready to start VMs.
 dev:
     {{runtime}} && cd host && iex -S mix
 
-test: test-stdio test-host
+# All local tests: native stdio, core host tests, and cooked applications.
+test: test-stdio test-host test-apps
 
 test-host:
     {{runtime}} && cd host && mix test --exclude examples
+
+# CI runs these after nix flake check has covered the core tests and notebooks.
+test-apps: build-examples
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{runtime}}
+    export KETTLECORN_EXAMPLES="$PWD/_kettlecorn/examples"
+    (cd host && mix test test/apps_test.exs)
+    bash bin/kettlecorn-run --app "$KETTLECORN_EXAMPLES/csv_stats" -e 'CsvStats.report()' | grep -E '^  east +948.00$'
+    echo 'Counter.increment()' | bash bin/kettlecorn-run --app "$KETTLECORN_EXAMPLES/counter" --iex | grep -F 'iex(1)> 11'
 
 test-stdio:
     python3 c/test/stdio_test.py
@@ -35,7 +90,7 @@ test-stdio:
 lint:
     cargo fmt --manifest-path launcher/Cargo.toml -- --check
     nixpkgs-fmt --check flake.nix nix/*.nix
-    cd host && mix format --check-formatted && mix format --check-formatted $(find ../guest/lib -name '*.ex')
+    cd host && mix format --check-formatted && mix format --check-formatted ../examples/apps/*/mix.exs $(find ../guest/lib -name '*.ex')
     cd host && mix deps.unlock --check-unused && mix credo && mix reach.check --arch
     cmp LICENSE host/LICENSE  # the Hex package carries a copy
 
@@ -48,7 +103,7 @@ typecheck:
 
 format:
     nixpkgs-fmt flake.nix nix/*.nix
-    cd host && mix format && mix format $(find ../guest/lib -name '*.ex')
+    cd host && mix format && mix format ../examples/apps/*/mix.exs $(find ../guest/lib -name '*.ex')
 
 # The runtime release archive (as the release workflow builds it), into ./release.
 release-archive:

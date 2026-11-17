@@ -72,4 +72,17 @@ defmodule TestRuntime do
   end
 end
 
-ExUnit.start(exclude: if(TestRuntime.available?(), do: [], else: [:integration]))
+examples? = System.get_env("KETTLECORN_EXAMPLES") != nil
+
+cond do
+  not TestRuntime.available?() ->
+    IO.puts("KETTLECORN_RUNTIME not available: skipping integration tests")
+    ExUnit.start(exclude: [:integration])
+
+  !examples? ->
+    IO.puts("KETTLECORN_EXAMPLES not set: skipping the example app tests")
+    ExUnit.start(exclude: [:examples])
+
+  true ->
+    ExUnit.start()
+end

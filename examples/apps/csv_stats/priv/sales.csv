@@ -1,0 +1,8 @@
+region,product,units,unit_price
+north,kettle,12,39.90
+north,popcorn,140,2.50
+south,kettle,7,39.90
+south,popcorn,95,2.50
+east,kettle,20,39.90
+east,popcorn,60,2.50
+west,popcorn,210,2.50
