@@ -1,0 +1,220 @@
+# Getting started with Kettlecorn
+
+```elixir
+Mix.install([{:kettlecorn, "~> 0.1.0"}])
+```
+
+## About this notebook
+
+Kettlecorn runs untrusted Elixir and Erlang in a sandbox. Each VM runs OTP
+and Elixir in its own launcher process, using a BEAM emulator compiled to
+WebAssembly. This notebook covers evaluation, persistent state, errors,
+isolation, and limits. The **host** is this Livebook runtime; the **guest**
+is the OTP system running inside Wasmtime.
+
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
+Run the cells in order. Kettlecorn is experimental; bugs in it or its
+dependencies may compromise isolation. Read [sandbox and resource limits](../guides/sandbox.md)
+before using it with untrusted workloads.
+
+## Install the runtime
+
+The Hex package doesn't contain the runtime: the emulators and the guest's
+OTP and Elixir. `Kettlecorn.Install.runtime/1` downloads the archive for
+this library version from its GitHub release, checks its SHA-256, and
+unpacks it into your user cache directory. Kettlecorn finds it there
+automatically. The archive includes the native launcher for your platform
+with an embedded Wasmtime engine.
+
+```elixir
+{:ok, runtime} = Kettlecorn.Install.runtime()
+```
+
+`mix kettlecorn.install` does the same from a Mix project.
+
+## Run one evaluation
+
+`Kettlecorn.run/2` starts a fresh VM, evaluates code, and stops it. Use this
+when runs must not share state:
+
+```elixir
+{:ok, %{"value" => 120}} =
+  Kettlecorn.run("Enum.reduce(1..5, &*/2)",
+    max_fuel: 50_000_000_000,
+    max_lifetime: 10_000
+  )
+```
+
+## Reuse a VM
+
+`max_fuel` limits total execution in Wasmtime fuel units (roughly WebAssembly
+instructions), and `max_lifetime` limits elapsed time in milliseconds. Both
+include startup and apply across all evaluations in a VM.
+
+`Kettlecorn.start_link/1` starts the launcher, boots OTP, and returns once the
+guest is ready. The first start compiles the emulator. Later starts use
+the launcher's cache, but still copy the runtime and boot OTP; see the
+[performance guide](../guides/performance.md).
+The following VM has a ten-minute lifetime for reading and running these
+cells. Restart from this cell if it expires.
+
+```elixir
+{:ok, vm} =
+  Kettlecorn.start_link(
+    max_memory: 256 * 1024 * 1024,
+    max_fuel: 1_000_000_000_000,
+    max_lifetime: 600_000
+  )
+```
+
+## Evaluate code
+
+`Kettlecorn.eval/3` returns the formatted result and captured standard output. For
+bounded plain data, it also returns the value itself:
+
+```elixir
+{:ok,
+ %{
+   "value" => [{1, 1}, {2, 4}, {3, 9}],
+   "inspected" => "[{1, 1}, {2, 4}, {3, 9}]",
+   "output" => "hi\n"
+ }} = Kettlecorn.eval(vm, ~S|IO.puts("hi"); Enum.map(1..3, fn n -> {n, n * n} end)|)
+```
+
+`"value"` is structured data; `"inspected"` is its formatted text. Writes to
+stderr bypass `"output"` and go to the VM's console output. Retrieve console
+stdout and stderr together with `Kettlecorn.take_output/1`, or configure an
+`owner: pid` to receive events labeled `:stdout` and `:stderr`.
+
+The VM runs OTP. Processes, ETS, regular expressions and
+protocols all work, and state persists between evaluations:
+
+```elixir
+{:ok, _} =
+  Kettlecorn.eval(vm, """
+  defmodule Greeter do
+    def hello(name), do: "Hello, \#{name}!"
+  end
+  """)
+
+{:ok, %{"value" => "Hello, Ada!"}} = Kettlecorn.eval(vm, ~S|Greeter.hello("Ada")|)
+```
+
+Variables bound by evaluated code are local to that evaluation. The module
+above remains loaded, but this variable does not:
+
+```elixir
+{:ok, %{"value" => 42}} = Kettlecorn.eval(vm, "answer = 42")
+{:ok, %{"value" => false}} = Kettlecorn.eval(vm, "Map.has_key?(Map.new(binding()), :answer)")
+```
+
+Pass values into each evaluation with `:binding`:
+
+```elixir
+{:ok, %{"value" => 42}} = Kettlecorn.eval(vm, "x * y", binding: %{x: 6, y: 7})
+```
+
+An exception in evaluated code returns an error result. The VM keeps running:
+
+```elixir
+{:error, %{"kind" => "error", "message" => message}} = Kettlecorn.eval(vm, ~S|raise "boom"|)
+IO.puts(message)
+```
+
+## Isolation
+
+The guest sees a private copy of the runtime's file system. By default it
+has no network, can't start OS processes, can't load native code, and
+doesn't inherit the host's environment variables. Denied operations return
+error tuples or raise exceptions; environment variables that weren't passed
+to the guest return `nil`. The VM keeps running:
+
+```elixir
+{:ok, %{"value" => {:error, :enoent}}} =
+  Kettlecorn.eval(vm, ~S<File.read("/etc/passwd")>)
+
+{:ok, %{"value" => {:error, :eacces}}} =
+  Kettlecorn.eval(vm, ~S<:gen_tcp.connect({1, 1, 1, 1}, 80, [], 2_000)>)
+
+{:error, %{"kind" => "error"}} = Kettlecorn.eval(vm, ~S<System.cmd("ls", [])>)
+
+{:ok, %{"value" => nil}} = Kettlecorn.eval(vm, ~S<System.get_env("PATH")>)
+```
+
+The host file is absent (`:enoent`), socket access is denied (`:eacces`),
+starting a command raises, and the host's `PATH` is absent (`nil`).
+
+Writes succeed, but only in the VM's copy, which is deleted when the VM
+stops. Halting the guest stops its VM:
+
+```elixir
+{:ok, %{"value" => "notes"}} =
+  Kettlecorn.eval(vm, ~S<File.write!("/tmp/notes", "notes"); File.read!("/tmp/notes")>)
+
+{:error, {:vm_down, :normal}} =
+  Kettlecorn.run("System.halt(0)", max_fuel: 50_000_000_000, max_lifetime: 10_000)
+```
+
+`network: true` and `http: true` grant sockets and `wasi:http`. They're all
+or nothing: Kettlecorn has no host allowlist, so a VM with a grant can
+reach anything the machine can. The
+[network notebook](network.livemd#compare-network-grants)
+shows both.
+
+## Limits
+
+An evaluation that runs past its `:timeout` is killed. The evaluator also
+traces its descendants and attempts to kill them. The VM survives:
+
+```elixir
+{:error, %{"kind" => "timeout"}} =
+  Kettlecorn.eval(vm, "Stream.repeatedly(fn -> 1 end) |> Stream.run()", timeout: 500)
+
+{:ok, %{"value" => :still_here}} = Kettlecorn.eval(vm, ":still_here")
+```
+
+Guest code can disable tracing, so evaluation cleanup is best effort.
+Use VM limits to bound untrusted code.
+
+The VM as a whole has limits too: `:max_memory` (bytes of WebAssembly
+memory), `:max_lifetime` (wall-clock milliseconds) and `:max_fuel` (CPU, in
+Wasmtime fuel units). These limits can stop a VM without affecting the
+others. Here a separate, unlinked VM runs out of memory:
+
+```elixir
+{:ok, small} =
+  Kettlecorn.start(
+    max_memory: 128 * 1024 * 1024,
+    max_fuel: 100_000_000_000,
+    max_lifetime: 30_000
+  )
+
+{:error, {:vm_down, reason}} =
+  Kettlecorn.eval(small, ~S|Enum.map(1..100, fn _ -> :binary.copy("x", 10_000_000) end)|,
+    timeout: 30_000
+  )
+
+reason
+```
+
+## Stop the VM
+
+Modules, processes, ETS tables, and files persist between evaluations. Give
+mutually untrusted tenants separate VMs. Stop a VM when you have finished:
+
+```elixir
+Kettlecorn.stop(vm)
+```
+
+## Next steps
+
+* [Working with guest VMs](working-with-guests.livemd) covers Erlang,
+  GenServers, messages, host calls, and returned guest values.
+* The [use cases notebook](use-cases.livemd) runs untrusted code in a
+  service, exposes operations through host calls, and runs submission tests.
+* The [internals notebook](internals.livemd) looks at the runtime, the
+  launcher command line and the protocol.
+* [Troubleshooting](../guides/running-applications.md#troubleshooting) covers
+  missing runtimes, rejected payloads, and VM failures.
+* `Kettlecorn.start_link/1` and `Kettlecorn.Sandbox` document the VM options;
+  `Kettlecorn.Cook` packages your own Mix application for the guest.

@@ -1,0 +1,196 @@
+# Working with guest VMs
+
+```elixir
+Mix.install([{:kettlecorn, "~> 0.1.0"}])
+```
+
+## About this notebook
+
+Use a running VM for Erlang evaluation, GenServer calls, messages, and host
+calls. Examine how returned guest values differ from host values.
+Start with [Getting started](getting-started.livemd) for installation,
+evaluation, isolation, and resource limits.
+
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
+Run the cells in order.
+
+```elixir
+{:ok, runtime} = Kettlecorn.Install.runtime()
+```
+
+## Start a VM
+
+The VM has a ten-minute lifetime for this interactive session. Restart from
+this cell if it expires. `owner: self()` sends guest messages and host calls
+to this process; host applications must keep consuming these events.
+
+```elixir
+{:ok, vm} =
+  Kettlecorn.start_link(
+    owner: self(),
+    max_memory: 256 * 1024 * 1024,
+    max_fuel: 1_000_000_000_000,
+    max_lifetime: 600_000
+  )
+```
+
+## GenServers in the guest
+
+`Kettlecorn.call/4` and `Kettlecorn.cast/3` reach GenServers registered in
+the guest:
+
+```elixir
+{:ok, _} =
+  Kettlecorn.eval(vm, """
+  defmodule Counter do
+    use GenServer
+    def init(n), do: {:ok, n}
+    def handle_call(:get, _from, n), do: {:reply, n, n}
+    def handle_cast({:add, k}, n), do: {:noreply, n + k}
+  end
+
+  GenServer.start(Counter, 0, name: :counter)
+  """)
+
+:ok = Kettlecorn.cast(vm, :counter, {:add, 5})
+{:ok, 5} = Kettlecorn.call(vm, :counter, :get)
+```
+
+Calling an unregistered name returns an error:
+
+```elixir
+{:error, :noproc} = Kettlecorn.call(vm, :nobody, :get)
+```
+
+## Messages
+
+The guest sends messages to the host with `Kettlecorn.Host.send/1`. They
+arrive at the owner as `{:kettlecorn, vm, {:message, term}}`. The owner
+acknowledges each event after handling it to release its delivery budget.
+The host sends
+`{:wasm, payload}` to a guest process with `Kettlecorn.send/4`:
+
+```elixir
+{:ok, _} =
+  Kettlecorn.eval(vm, """
+  echo = spawn(fn ->
+    receive do
+      {:wasm, {:ping, n}} -> Kettlecorn.Host.send({:pong, n * 2})
+    end
+  end)
+
+  Process.register(echo, :echo)
+  """)
+
+:ok = Kettlecorn.send(vm, :echo, {:ping, 21})
+
+receive do
+  {:kettlecorn, ^vm, {:message, message}} ->
+    Kettlecorn.acknowledge(vm)
+    message
+after
+  5_000 -> :timeout
+end
+```
+
+## Host calls
+
+A host call lets the guest ask the host for something it can't do itself.
+The guest calls `Kettlecorn.Host.call/3` and waits; the owner gets
+`{:host_call, reply_to, name, args}` and answers with `Kettlecorn.reply/3`:
+
+```elixir
+task = Task.async(fn -> Kettlecorn.eval(vm, ~S|Kettlecorn.Host.call("double", %{n: 21})|) end)
+
+receive do
+  {:kettlecorn, ^vm, {:host_call, reply_to, "double", %{n: n}}} when is_number(n) ->
+    Kettlecorn.reply(vm, reply_to, {:ok, n * 2})
+    Kettlecorn.acknowledge(vm)
+after
+  5_000 -> raise "guest did not request double"
+end
+
+{:ok, %{"value" => {:ok, 42}}} = Task.await(task)
+```
+
+## Returned guest values
+
+Everything from the guest is decoded by `Kettlecorn.ETF`, which never
+creates atoms or live pids on the host. An atom the host doesn't have
+arrives as `{:unknown_atom, name}` and a guest pid as a
+`Kettlecorn.Pid` that only addresses the guest. A struct whose module atom
+exists on the host becomes `Kettlecorn.Struct`, holding its module and fields.
+Unknown module atoms remain `{:unknown_atom, name}` in ordinary maps:
+
+```elixir
+{:ok,
+ %{
+   "value" => %Kettlecorn.Struct{
+     module: Date,
+     fields: %{calendar: Calendar.ISO, year: year, month: month, day: day}
+   }
+ }} =
+  Kettlecorn.eval(vm, "Date.utc_today()")
+
+{:ok, date} = Date.new(year, month, day)
+date
+```
+
+The example accepts an ISO date and reconstructs it with `Date.new/3`,
+which validates its fields. Before constructing host structs, check the
+module and field values: their protocol implementations run on the host. The
+[Validating guest data notebook](guest-data.livemd)
+shows validation for nested guest values.
+
+## Erlang
+
+With `language: :erlang`, `Kettlecorn.eval/3` evaluates Erlang. Expressions
+run one after another, as in the Erlang shell, and bindings are Erlang
+variables:
+
+```elixir
+{:ok, %{"value" => 120, "output" => "5! = 120\n"}} =
+  Kettlecorn.eval(
+    vm,
+    ~S|Fact = fun F(0) -> 1; F(K) -> K * F(K - 1) end. R = Fact(N), io:format("~p! = ~p~n", [N, R]). R|,
+    language: :erlang,
+    binding: %{"N" => 5}
+  )
+```
+
+Source that starts with `-module(name).` is a module. It's compiled and
+loaded, and both languages can call it:
+
+```elixir
+{:ok, %{"value" => {:module, :shapes}}} =
+  Kettlecorn.eval(
+    vm,
+    ~S"""
+    -module(shapes).
+    -export([area/1]).
+
+    area({circle, R}) -> math:pi() * R * R;
+    area({rect, W, H}) -> W * H.
+    """,
+    language: :erlang
+  )
+
+{:ok, %{"value" => 12}} = Kettlecorn.eval(vm, ":shapes.area({:rect, 3, 4})")
+```
+
+Results are inspected and errors formatted as Erlang does:
+
+```elixir
+{:error, %{"message" => message}} = Kettlecorn.eval(vm, "shapes:area(square).", language: :erlang)
+IO.puts(message)
+```
+
+## Stop the VM
+
+```elixir
+Kettlecorn.stop(vm)
+```
+
+[Use cases](use-cases.livemd) builds services around these APIs. The
+[Guest API guide](../guides/guest-api.md) lists the guest messaging and HTTP
+contracts; `Kettlecorn` documents the host functions.

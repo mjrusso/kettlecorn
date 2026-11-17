@@ -30,6 +30,7 @@ defmodule Kettlecorn.MixProject do
   defp deps do
     [
       {:nimble_options, "~> 1.2"},
+      {:lua, "1.0.2", only: [:dev, :test]},
       {:stream_data, "~> 1.2", only: :test},
       {:credo, "~> 1.7.19", only: :dev, runtime: false},
       {:ex_slop, "~> 0.4.5", only: :dev, runtime: false},

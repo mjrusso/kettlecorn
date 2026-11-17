@@ -1,0 +1,313 @@
+# Exploring Kettlecorn's internals
+
+```elixir
+Mix.install([{:kettlecorn, "~> 0.1.0"}])
+```
+
+## About this notebook
+
+Inspect the runtime's files, native launcher command line, and VM's private
+directory. Trace the frames between host and guest and examine how the host
+decodes guest data.
+
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
+Run the cells in order.
+Some cells use internal modules and data structures, including the protocol
+decoder and VM state, which can change between versions; the
+[getting started notebook](getting-started.livemd) covers the public API.
+
+```elixir
+{:ok, runtime} = Kettlecorn.Install.runtime()
+```
+
+## The runtime
+
+```mermaid
+flowchart LR
+  subgraph host [your BEAM]
+    owner[owner process] --- vm[Kettlecorn.VM]
+  end
+  vm -- "port: stdin frames" --> wasmtime
+  wasmtime -- "local socket: output records" --> vm
+  subgraph wasmtime [launcher process]
+    beam[beam.wasm: BEAM emulator] --- root["/ = a private copy of root/"]
+  end
+```
+
+A runtime is a directory. `beam.wasm` and `beam-http.wasm` are two emulator
+variants, each a WebAssembly component; `beam-http.wasm` also imports
+`wasi:http`. `root/` is the guest's file system: OTP, Elixir, Req and the
+`kettlecorn_guest` application, as `.beam` files.
+
+```elixir
+runtime = Kettlecorn.Runtime.dir()
+File.ls!(runtime) |> Enum.sort()
+```
+
+`manifest.json` records the versions, the protocol version the library
+checks before it starts a VM, and the WASI interfaces each emulator imports
+(read from the components when the runtime was built):
+
+```elixir
+manifest = Kettlecorn.Runtime.load!(runtime).manifest
+Map.drop(manifest, [:imports])
+```
+
+```elixir
+manifest.imports["beam-http.wasm"] -- manifest.imports["beam.wasm"]
+```
+
+The Rust library reads fixed guest arguments, environment, and emulator names
+from `launch/` for both host VMs and the script CLI. Argument files hold one
+argument per line:
+
+```elixir
+for file <- File.ls!(Path.join(runtime, "launch")) |> Enum.sort(), into: %{} do
+  {file, File.read!(Path.join([runtime, "launch", file])) |> String.split("\n", trim: true)}
+end
+```
+
+`-Mea min` makes ERTS use plain `malloc`. Without it, ERTS's own allocators
+fragment WebAssembly memory, which never shrinks, and a VM that keeps
+building large heaps runs out of memory with little live data.
+
+## The command line
+
+`Kettlecorn.Sandbox.new/1` turns options into a sandbox and fails on an
+unknown or invalid option, before anything starts. `prepare/1` creates the
+VM's private directory through the native root populator, and `command/1` is
+what the VM runs:
+
+```elixir
+sandbox =
+  Kettlecorn.Sandbox.new(max_memory: 256 * 1024 * 1024, max_lifetime: 60_000, network: true)
+
+instance = Kettlecorn.Sandbox.Instance.prepare(sandbox)
+Kettlecorn.Sandbox.Instance.command(instance)
+```
+
+The host passes limits, grants and guest options to the bundled launcher.
+The Rust library reads the fixed guest arguments and environment from `launch/`.
+`Kettlecorn.VM` adds a private `--output-socket` path when opening the port and
+requests one record of at most 64 KiB at a time, before decoding guest frames.
+
+The private directory has an unguessable name and mode 0700. It holds the
+guest's root and, out of the guest's reach, the launcher's stderr:
+
+```elixir
+%File.Stat{mode: mode} = File.stat!(instance.dir)
+{instance.dir, Integer.to_string(Bitwise.band(mode, 0o777), 8), File.ls!(instance.dir)}
+```
+
+```elixir
+Kettlecorn.Sandbox.Instance.cleanup(instance)
+File.exists?(instance.dir)
+```
+
+## A running VM
+
+Start a VM and look at its state. It owns the launcher process through a
+port, and keeps a map of requests waiting for the guest. This interactive
+VM expires after ten minutes; restart from this cell if it expires:
+
+```elixir
+{:ok, vm} =
+  Kettlecorn.start_link(
+    owner: self(),
+    max_fuel: 1_000_000_000_000,
+    max_lifetime: 600_000
+  )
+
+state = :sys.get_state(vm)
+Map.take(state, [:boot, :pending, :max_message_size])
+```
+
+Each VM has its own launcher process. All of the guest's BEAM schedulers
+run on one OS thread.
+
+```elixir
+{:os_pid, os_pid} = Port.info(state.port, :os_pid)
+{ps, 0} = System.cmd("ps", ["-o", "pid,rss,command", "-p", Integer.to_string(os_pid)])
+IO.puts(ps)
+```
+
+## Frames
+
+The guest reads frames from its stdin and writes frames to its stdout. Each
+frame has a 4-byte big-endian length, a type byte, and the payload ([the protocol specification](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md)
+has the full list). `Kettlecorn.send/4` becomes a `send`
+frame (type 16): a request id, a target and the payload as external term
+format. The host sends it through port stdin. The launcher transports guest
+output over the local socket in records of at most 64 KiB; a record may contain
+partial or multiple guest frames:
+
+```elixir
+prepared = Kettlecorn.Protocol.prepare("echo", {:ping, 1})
+frame = Kettlecorn.Protocol.send_frame(7, prepared)
+frame |> Kettlecorn.Protocol.frame() |> IO.iodata_to_binary()
+```
+
+The guest answers with a `send_result` frame (type 5) carrying the same id
+and a status. The host splits frames off the stream itself, and refuses a
+frame whose declared length exceeds `:max_message_size`.
+
+The next stream concatenates two frames: a six-byte body containing
+`send_result` (type 5, request 7, status 0), followed by a three-byte body
+containing `stdout` (type 1, text `hi`). Both four-byte length prefixes
+count the type byte and payload. Split the stream inside the first frame and
+pass the decoder state into the next call:
+
+```elixir
+stream = <<0, 0, 0, 6, 5, 0, 0, 0, 7, 0, 0, 0, 0, 3, 1, ?h, ?i>>
+<<first::binary-size(7), second::binary>> = stream
+{:ok, [], decoder} = Kettlecorn.Protocol.split(first, 1_024)
+{:ok, bodies, {:header, ""}} = Kettlecorn.Protocol.split(second, 1_024, decoder)
+
+[{:send_result, 7, :ok}, {:stdout, "hi"}] =
+  Enum.map(bodies, &Kettlecorn.Protocol.decode(&1, 1_024))
+```
+
+```elixir
+{:error, {:frame_too_large, 1_000_000_000}} =
+  Kettlecorn.Protocol.split(<<1_000_000_000::32, 1>>, 64 * 1024 * 1024)
+```
+
+[`Kettlecorn.Protocol.decode/2`](https://github.com/mjrusso/kettlecorn/blob/main/host/lib/kettlecorn/protocol.ex) returns decoded events. For message frames,
+its second argument limits the ETF decoder's memory use.
+
+`Kettlecorn.call/4` isn't a frame type of its own: it's a `send` to the
+guest's `Kettlecorn.Proxy`, which makes the `GenServer.call` in the guest
+and answers with an event. The host sends the proxy timeout in the call
+payload. For evaluations it also sends the evaluation and capture-finish
+budgets. The guest applies these budgets directly.
+
+## The guest's view
+
+Inside, the VM is a regular OTP system on a WebAssembly architecture, with
+one scheduler and the arguments `Kettlecorn.Sandbox` passed:
+
+```elixir
+{:ok, %{"value" => view}} =
+  Kettlecorn.eval(vm, """
+  %{
+    architecture: :erlang.system_info(:system_architecture),
+    schedulers: :erlang.system_info(:schedulers),
+    root: :code.root_dir(),
+    applications: Enum.map(Application.started_applications(), &elem(&1, 0)),
+    registered: Enum.filter(Process.registered(), &(&1 in [:kettlecorn_proxy, :kettlecorn_evaluator]))
+  }
+  """)
+
+view
+```
+
+Each evaluation runs in a new process whose group leader captures its
+standard output. Writes to stderr bypass this capture and arrive as `:stderr`
+console events. `Kettlecorn.take_output/1` combines console stdout and stderr
+in one buffer without stream labels. A second process traces descendants and
+attempts to kill them on timeout. After success, the group leader forwards
+their later output to the VM's stdout. Ask the evaluation who its tracer is:
+
+```elixir
+{:ok, %{"inspected" => inspected}} =
+  Kettlecorn.eval(vm, """
+  {:tracer, tracer} = :erlang.trace_info(self(), :tracer)
+  {is_pid(tracer) and tracer != Process.group_leader(), :erlang.trace_info(self(), :flags)}
+  """)
+
+IO.puts(inspected)
+```
+
+A process started by an evaluation outlives it. Its output arrives at the
+owner as a `:stdout` event:
+
+```elixir
+{:ok, _} =
+  Kettlecorn.eval(vm, ~S"""
+  spawn(fn -> Process.sleep(100); IO.puts("later") end)
+  :ok
+  """)
+
+receive do
+  {:kettlecorn, ^vm, {:stdout, text}} ->
+    Kettlecorn.acknowledge(vm)
+    text
+after
+  5_000 -> :timeout
+end
+```
+
+## Decoding what the guest sends
+
+The guest is untrusted, so the host never calls `binary_to_term/1` on its
+data. `Kettlecorn.ETF` decodes plain data only:
+
+```elixir
+etf = :erlang.term_to_binary({:ok, self(), make_ref(), "data"})
+
+{:ok, {:ok, %Kettlecorn.Pid{vm: nil}, %Kettlecorn.Opaque{type: :reference}, "data"}} =
+  Kettlecorn.ETF.decode(etf)
+```
+
+This synthetic input contains the host's pid. Standalone decoding produces an
+unbound `Kettlecorn.Pid`; it cannot address a guest. Pids received through a
+VM are bound to that VM and can be used with `Kettlecorn.send/4`. The reference
+becomes an opaque placeholder. Unknown atoms become
+`{:unknown_atom, name}` tuples, so the guest cannot grow the host's atom
+table. Funs are rejected:
+
+```elixir
+name = "an_atom_the_host_lacks_#{System.unique_integer([:positive])}"
+
+{
+  Kettlecorn.ETF.decode(<<131, 118, byte_size(name)::16, name::binary>>),
+  Kettlecorn.ETF.decode(:erlang.term_to_binary(fn -> :evil end))
+}
+```
+
+Structs are maps with a `:__struct__` key, so the guest can name any host
+module. Decoded as a struct, this map would be a `File.Stream` whose path
+the guest chose, and host code that enumerates it would read that file. It
+decodes as a `Kettlecorn.Struct` instead, which only holds the data:
+
+```elixir
+forged = %{
+  __struct__: File.Stream,
+  path: "/etc/passwd",
+  line_or_bytes: :line,
+  modes: [],
+  raw: true
+}
+
+{:ok, decoded} = Kettlecorn.ETF.decode(:erlang.term_to_binary(forged))
+{decoded, Enumerable.impl_for(decoded)}
+```
+
+Small inputs can decode into large terms: each empty list in a list takes
+one byte to encode and 16 bytes on a 64-bit host heap. Compression shrinks
+the input further. The decoder charges the decoded data and each node's
+estimated heap size, and stops at a budget (the VM uses `:max_message_size`):
+
+```elixir
+bomb = :erlang.term_to_binary(List.duplicate([], 4_000_000), compressed: 9)
+{byte_size(bomb), Kettlecorn.ETF.decode(bomb, max_bytes: 16 * 1024 * 1024)}
+```
+
+## VM termination
+
+If a limit stops a VM, every pending request fails with
+`{:error, {:vm_down, reason}}`. The reason identifies the limit:
+
+```elixir
+{:ok, fuel_vm} = Kettlecorn.start(max_fuel: 3_000_000_000, max_lifetime: 30_000)
+Kettlecorn.eval(fuel_vm, "Stream.repeatedly(fn -> 1 end) |> Stream.run()", timeout: 60_000)
+```
+
+The fuel budget includes booting, and Wasmtime stops the guest when it
+runs out. `:max_lifetime` stops it after the wall-clock limit
+(`{:vm_down, :timeout}`). `:max_memory` caps WebAssembly memory growth;
+an allocation failure can terminate ERTS.
+
+```elixir
+Kettlecorn.stop(vm)
+```

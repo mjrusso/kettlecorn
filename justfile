@@ -86,6 +86,10 @@ test-apps: build-examples
 test-stdio:
     python3 c/test/stdio_test.py
 
+# Runs every notebook's cells (host/notebooks) against the runtime.
+notebooks:
+    {{runtime}} && cd host && for nb in notebooks/*.livemd; do mix run scripts/livebook_test.exs "$nb" || exit 1; done
+
 # Rust/Nix/Elixir formatting, unused dependencies, Credo and Reach. Needs `just deps`.
 lint:
     cargo fmt --manifest-path launcher/Cargo.toml -- --check

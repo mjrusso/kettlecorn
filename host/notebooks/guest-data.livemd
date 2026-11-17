@@ -1,0 +1,198 @@
+# Validating guest data
+
+```elixir
+Mix.install([{:kettlecorn, "~> 0.1.0"}])
+```
+
+## About this notebook
+
+Validate guest structs before constructing host values. Start with one quote
+constructor, then extend it to nested containers and ISO dates. Read
+[Working with guest VMs](working-with-guests.livemd) first for the host/guest
+boundary and returned values.
+
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
+Run the cells in order.
+
+```elixir
+{:ok, runtime} = Kettlecorn.Install.runtime()
+```
+
+## Validate a quote
+
+A guest struct whose module atom exists on the host arrives as
+`Kettlecorn.Struct`, holding its module and fields as data. Otherwise it stays
+a map with `__struct__: {:unknown_atom, name}`. Rebuilding a host struct enables
+that module's protocol implementations. Accept only known modules and validate
+their fields before construction. Start with a single quote type:
+
+```elixir
+defmodule MyApp.Quote do
+  @enforce_keys [:sku, :price]
+  defstruct [:sku, :price]
+
+  def new(sku, price) when is_binary(sku) and is_number(price) and price >= 0,
+    do: {:ok, %__MODULE__{sku: sku, price: price}}
+
+  def new(_sku, _price), do: {:error, :invalid_quote}
+
+  def from_guest(%Kettlecorn.Struct{module: __MODULE__, fields: %{sku: sku, price: price}}),
+    do: new(sku, price)
+
+  def from_guest(_other), do: {:error, :invalid_quote}
+end
+```
+
+A pricing plugin defines a module of the same name in the guest (in a
+cooked application, both sides would compile the same file) and returns
+quotes:
+
+```elixir
+plugin = ~S"""
+defmodule MyApp.Quote do
+  defstruct [:sku, :price]
+end
+
+defmodule Pricing do
+  def quote("apple"), do: {:ok, %MyApp.Quote{sku: "apple", price: 0.5}}
+  def quote("pear"), do: {:ok, %MyApp.Quote{sku: "pear", price: -1}}
+  def quote(sku), do: {:ok, URI.parse("https://example.com/" <> sku)}
+end
+"""
+
+{:ok, pricing} =
+  Kettlecorn.start_link(
+    max_memory: 128 * 1024 * 1024,
+    max_fuel: 1_000_000_000_000,
+    max_lifetime: 600_000
+  )
+
+{:ok, _} = Kettlecorn.eval(pricing, plugin)
+
+{:ok, %{"value" => apple}} = Kettlecorn.eval(pricing, ~S|Pricing.quote("apple")|)
+apple
+```
+
+`from_guest/1` accepts the expected module and validates its fields:
+
+```elixir
+{:ok, quote} = apple
+{:ok, %MyApp.Quote{sku: "apple", price: 0.5}} = MyApp.Quote.from_guest(quote)
+```
+
+A negative price is rejected by the same constructor:
+
+```elixir
+{:ok, %{"value" => {:ok, quote}}} = Kettlecorn.eval(pricing, ~S|Pricing.quote("pear")|)
+{:error, :invalid_quote} = MyApp.Quote.from_guest(quote)
+```
+
+## Convert nested values
+
+A plugin can return quotes inside a larger result, such as a dated price list:
+
+```elixir
+{:ok, %{"value" => catalog}} =
+  Kettlecorn.eval(pricing, ~S|%{"date" => ~D[2026-01-01], "quotes" => [Pricing.quote("apple")]}|)
+
+%{
+  "date" => %Kettlecorn.Struct{module: Date},
+  "quotes" => [{:ok, %Kettlecorn.Struct{module: MyApp.Quote}}]
+} =
+  catalog
+```
+
+Validating only the outer map would leave its guest structs unconverted. Traverse
+containers and apply a constructor to each accepted struct. The converter below
+accepts quotes and ISO dates, rejects other `Kettlecorn.Struct` values, and
+preserves ordinary maps, guest pid handles and
+opaque handles as data. The preceding VM has a ten-minute lifetime; restart
+the quote example if it expires.
+
+```elixir
+defmodule MyApp.GuestData do
+  def cast(%Kettlecorn.Struct{module: MyApp.Quote, fields: %{sku: sku, price: price}}),
+    do: MyApp.Quote.new(sku, price)
+
+  # Date's calendar is a module whose callbacks run on the host; only accept ISO.
+  def cast(%Kettlecorn.Struct{
+        module: Date,
+        fields: %{calendar: Calendar.ISO, year: year, month: month, day: day}
+      })
+      when is_integer(year) and is_integer(month) and is_integer(day),
+      do: Date.new(year, month, day)
+
+  def cast(%Kettlecorn.Struct{module: Date}), do: {:error, :invalid_date}
+
+  def cast(%Kettlecorn.Struct{module: module}), do: {:error, {:unexpected_struct, module}}
+
+  def cast(%handle{} = value) when handle in [Kettlecorn.Pid, Kettlecorn.Opaque], do: {:ok, value}
+
+  def cast(list) when is_list(list), do: cast_list(list, [])
+
+  def cast(tuple) when is_tuple(tuple) do
+    with {:ok, list} <- cast_list(Tuple.to_list(tuple), []), do: {:ok, List.to_tuple(list)}
+  end
+
+  def cast(map) when is_map(map) do
+    with {:ok, pairs} <- cast_list(Map.to_list(map), []), do: {:ok, Map.new(pairs)}
+  end
+
+  def cast(other), do: {:ok, other}
+
+  defp cast_list([head | tail], acc) do
+    with {:ok, head} <- cast(head), do: cast_list(tail, [head | acc])
+  end
+
+  defp cast_list([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp cast_list(tail, acc) do
+    with {:ok, tail} <- cast(tail), do: {:ok, :lists.reverse(acc, tail)}
+  end
+end
+```
+
+The nested result becomes a host date and a quote validated by its constructor:
+
+```elixir
+{:ok, %{"date" => ~D[2026-01-01], "quotes" => [{:ok, %MyApp.Quote{sku: "apple", price: 0.5}}]}} =
+  MyApp.GuestData.cast(catalog)
+```
+
+ISO dates are reconstructed from integer fields. Missing fields, wrong
+types and other calendars are refused before calling `Date.new/3`:
+
+```elixir
+{:ok, %{"value" => date}} = Kettlecorn.eval(pricing, "~D[2026-01-01]")
+{:ok, ~D[2026-01-01]} = MyApp.GuestData.cast(date)
+
+for fields <- [
+      %{calendar: Calendar.ISO},
+      %{calendar: Calendar.ISO, year: "2026", month: 1, day: 1},
+      %{calendar: MyApp.Calendar, year: 2026, month: 1, day: 1}
+    ] do
+  {:error, :invalid_date} = MyApp.GuestData.cast(%Kettlecorn.Struct{module: Date, fields: fields})
+end
+```
+
+`MyApp.Quote.new/2` rejects a quote with an invalid price. `cast/1` rejects
+structs the application doesn't accept:
+
+```elixir
+for sku <- ["pear", "plum"] do
+  {:ok, %{"value" => value}} = Kettlecorn.eval(pricing, "Pricing.quote(#{inspect(sku)})")
+  {sku, MyApp.GuestData.cast(value)}
+end
+```
+
+```elixir
+Kettlecorn.stop(pricing)
+```
+
+`struct!/2` checks keys but does not validate field values. Validate those
+values before constructing host structs or running their protocol implementations.
+
+## Next steps
+
+The [Guest API guide](../guides/guest-api.md) documents messages and host calls.
+[Use cases](use-cases.livemd) applies those APIs to services and plugins.

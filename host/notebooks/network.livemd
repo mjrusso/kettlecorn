@@ -1,0 +1,141 @@
+# Network access
+
+```elixir
+Mix.install([{:kettlecorn, "~> 0.1.0"}])
+```
+
+## About this notebook
+
+Compare denied network access, raw sockets, and HTTP requests. Read
+[Getting started](getting-started.livemd) first. This notebook is independent
+of the other notebooks.
+
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
+Run the cells in order.
+
+```elixir
+{:ok, runtime} = Kettlecorn.Install.runtime()
+```
+
+## Compare network grants
+
+Grant network access when the guest needs to make its own connections:
+
+* `network: true` gives sockets (`:gen_tcp`, `:ssl`, DNS) over Wasmtime's
+  `wasi:sockets`. The guest does TLS itself and trusts the host's CA
+  certificates, unless `:cacerts` names others.
+* `http: true` gives `wasi:http`: Wasmtime makes the requests and handles
+  TLS using its compiled Mozilla root CA list. The `:cacerts` option does
+  not change those roots. The guest installs
+  `Kettlecorn.HTTP.ReqAdapter` as Req's default adapter.
+
+Neither grant has an allowlist: a VM with one can reach anything the machine
+can, including services on `localhost`. The service here is a small HTTP
+server on the host, on `127.0.0.1`:
+
+```elixir
+{:ok, listener} =
+  :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false, reuseaddr: true])
+
+{:ok, port} = :inet.port(listener)
+url = "http://127.0.0.1:#{port}/"
+```
+
+This host-side loop returns a fixed response. Closing the listener stops it:
+
+```elixir
+serve = fn serve ->
+  case :gen_tcp.accept(listener) do
+    {:ok, socket} ->
+      with {:ok, _request} <- :gen_tcp.recv(socket, 0, 5_000) do
+        body = "hello from the host"
+
+        :gen_tcp.send(
+          socket,
+          "HTTP/1.1 200 OK\r\ncontent-length: #{byte_size(body)}\r\n\r\n" <> body
+        )
+      end
+
+      :gen_tcp.close(socket)
+      serve.(serve)
+
+    {:error, :closed} ->
+      :ok
+  end
+end
+
+spawn(fn -> serve.(serve) end)
+```
+
+The same code runs in three VMs: without a grant, with `network: true` and
+with `http: true`. It opens a TCP connection, then makes a request with
+`Kettlecorn.HTTP` and one with Req:
+
+```elixir
+code = """
+url = "#{url}"
+
+response = fn
+  {:ok, %{status: status, body: body}} -> {status, body}
+  {:error, %{__exception__: true, reason: reason}} -> {:error, reason}
+  {:error, reason} -> {:error, reason}
+end
+
+%{
+  "tcp" =>
+    with({:ok, socket} <- :gen_tcp.connect({127, 0, 0, 1}, #{port}, [], 2_000),
+      do: :gen_tcp.close(socket)
+    ),
+  "Kettlecorn.HTTP" => response.(Kettlecorn.HTTP.request(:get, url)),
+  "Req" => response.(Req.get(url, retry: false))
+}
+"""
+```
+
+Expected results:
+
+| Grant | TCP | `Kettlecorn.HTTP` | Req |
+|---|---|---|---|
+| None | `:eacces` | `:unsupported` | `:eacces` |
+| `network: true` | Allowed | `:unsupported` | HTTP 200 |
+| `http: true` | `:eacces` | HTTP 200 | HTTP 200 |
+
+```elixir
+ok_response = {200, "hello from the host"}
+
+expected = [
+  {[],
+   %{
+     "tcp" => {:error, :eacces},
+     "Kettlecorn.HTTP" => {:error, :unsupported},
+     "Req" => {:error, :eacces}
+   }},
+  {[network: true],
+   %{"tcp" => :ok, "Kettlecorn.HTTP" => {:error, :unsupported}, "Req" => ok_response}},
+  {[http: true],
+   %{"tcp" => {:error, :eacces}, "Kettlecorn.HTTP" => ok_response, "Req" => ok_response}}
+]
+
+for {grant, expected_result} <- expected do
+  {:ok, %{"value" => result}} =
+    Kettlecorn.run(
+      code,
+      grant ++ [max_fuel: 100_000_000_000, max_lifetime: 30_000, timeout: 10_000]
+    )
+
+  ^expected_result = result
+  {grant, result}
+end
+```
+
+With `network: true`, Req uses Finch and Mint over guest sockets.
+
+```elixir
+:gen_tcp.close(listener)
+```
+
+## Next steps
+
+[Guest API](../guides/guest-api.md#http-access) covers HTTP streaming and timeouts.
+[Use cases](use-cases.livemd#give-the-guest-controlled-access) shows how to expose
+selected host operations without a network grant.

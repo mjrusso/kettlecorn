@@ -1,0 +1,248 @@
+# Kettlecorn use cases
+
+```elixir
+Mix.install([{:kettlecorn, "~> 0.1.0"}])
+```
+
+## About this notebook
+
+Use a sandboxed VM to run user code, load plugins, and test submissions.
+Start with [Getting started](getting-started.livemd)
+and [Working with guest VMs](working-with-guests.livemd) for the APIs.
+
+[Network access](network.livemd) is an independent follow-on.
+The separate [Validating guest data](guest-data.livemd) notebook covers
+constructors and nested results.
+
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
+Run the cells in order.
+
+```elixir
+{:ok, runtime} = Kettlecorn.Install.runtime()
+```
+
+## Run code your users send
+
+A playground or an online judge runs code it can't trust. Give each run a
+separate VM with `Kettlecorn.run/2`, so runs can't see each other's state,
+and limit each one: memory, wall-clock time for the VM and the evaluation,
+and CPU (fuel):
+
+```elixir
+limits = [
+  max_memory: 128 * 1024 * 1024,
+  max_lifetime: 20_000,
+  max_fuel: 100_000_000_000,
+  timeout: 2_000
+]
+
+run = fn code ->
+  case Kettlecorn.run(code, limits) do
+    {:ok, %{"inspected" => result, "output" => output}} -> {:ok, result, output}
+    {:error, %{"kind" => kind, "message" => message}} -> {:error, kind, message}
+    {:error, reason} -> {:error, "vm_error", inspect(reason)}
+  end
+end
+
+submissions = [
+  ~S{Enum.sum(1..100)},
+  ~S{IO.puts("printing"); :ok},
+  ~S{raise ArgumentError, "bad input"},
+  ~S{Stream.repeatedly(fn -> :spin end) |> Stream.run()},
+  ~S{File.read!("/etc/passwd")}
+]
+
+submissions
+|> Task.async_stream(run, timeout: 30_000, max_concurrency: 4)
+|> Enum.zip_with(submissions, fn {:ok, result}, code -> {code, result} end)
+```
+
+The spinning submission hits its 2-second timeout and the one that reads
+`/etc/passwd` finds no such file. Each submission runs in a separate VM.
+
+To reduce startup latency for many short runs, keep a pool of VMs ready
+to accept code. Assign each VM to one run and stop it afterward.
+
+## Give the guest controlled access
+
+By default, sandboxed code has no network or access to host files. Expose
+the operations it needs as host calls. Here the guest can look
+up products in a host-side inventory. Other host calls are rejected. This VM
+has a ten-minute lifetime; restart its setup cell if it expires:
+
+```elixir
+inventory = %{"apple" => %{price: 0.5, stock: 12}, "pear" => %{price: 0.75, stock: 0}}
+
+{:ok, shop} =
+  Kettlecorn.start_link(
+    owner: self(),
+    max_memory: 128 * 1024 * 1024,
+    max_fuel: 100_000_000_000,
+    max_lifetime: 600_000
+  )
+```
+
+The owner handles requests while the evaluation waits. Validate the operation
+and its arguments before looking up inventory:
+
+```elixir
+answer_host_calls = fn answer_host_calls, task ->
+  receive do
+    {:kettlecorn, ^shop, {:host_call, reply_to, "lookup", %{"sku" => sku}}} when is_binary(sku) ->
+      reply =
+        case Map.fetch(inventory, sku) do
+          {:ok, item} -> {:ok, item}
+          :error -> {:error, "unknown sku"}
+        end
+
+      Kettlecorn.reply(shop, reply_to, reply)
+
+      Kettlecorn.acknowledge(shop)
+      answer_host_calls.(answer_host_calls, task)
+
+    {:kettlecorn, ^shop, {:host_call, reply_to, _name, _args}} ->
+      Kettlecorn.reply(shop, reply_to, {:error, "not allowed"})
+      Kettlecorn.acknowledge(shop)
+      answer_host_calls.(answer_host_calls, task)
+
+    {ref, result} when ref == task.ref ->
+      Process.demonitor(ref, [:flush])
+      result
+  after
+    10_000 -> raise "guest did not finish the inventory lookup"
+  end
+end
+```
+
+The guest asks for three products and then an operation the host rejects:
+
+```elixir
+code = ~S"""
+lookup = fn sku ->
+  case Kettlecorn.Host.call("lookup", %{"sku" => sku}) do
+    {:ok, %{price: price, stock: stock}} when stock > 0 -> {sku, price}
+    {:ok, _out_of_stock} -> {sku, :out_of_stock}
+    {:error, reason} -> {sku, reason}
+  end
+end
+
+{Enum.map(["apple", "pear", "plum"], lookup), Kettlecorn.Host.call("delete_all", %{})}
+"""
+```
+
+Run the evaluation in a task so the owner can answer its host calls. Check
+both successful lookups and rejected operations:
+
+```elixir
+task = Task.async(fn -> Kettlecorn.eval(shop, code) end)
+
+{:ok,
+ %{
+   "value" => {
+     [{"apple", 0.5}, {"pear", :out_of_stock}, {"plum", "unknown sku"}],
+     {:error, "not allowed"}
+   }
+ }} = answer_host_calls.(answer_host_calls, task)
+```
+
+```elixir
+Kettlecorn.stop(shop)
+```
+
+The host must check the call name and arguments before performing an
+operation. An unanswered host call times out in the guest after 5 seconds
+(`Kettlecorn.Host.call/3`'s `:timeout`).
+
+## Host third-party plugins
+
+Run a third-party pricing rule as a GenServer in its own VM. Call it with
+`Kettlecorn.call/4`, which takes a timeout like `GenServer.call/3`. This
+interactive VM has a ten-minute lifetime; restart this cell if it expires:
+
+```elixir
+plugin = ~S"""
+defmodule Discount do
+  use GenServer
+  def init(rate), do: {:ok, rate}
+  def handle_call({:price, amount}, _from, rate), do: {:reply, amount * (1 - rate), rate}
+  def handle_call(:hang, _from, rate), do: (Process.sleep(:infinity); {:reply, :never, rate})
+end
+
+GenServer.start(Discount, 0.1, name: :discount)
+"""
+
+{:ok, rules} =
+  Kettlecorn.start_link(
+    max_memory: 128 * 1024 * 1024,
+    max_fuel: 100_000_000_000,
+    max_lifetime: 600_000
+  )
+
+{:ok, _} = Kettlecorn.eval(rules, plugin)
+
+{:ok, 90.0} = Kettlecorn.call(rules, :discount, {:price, 100})
+```
+
+A call that exceeds its timeout returns `{:error, :timeout}`. Stop the
+plugin's VM before replacing it:
+
+```elixir
+{:error, :timeout} = Kettlecorn.call(rules, :discount, :hang, 1_000)
+Kettlecorn.stop(rules)
+```
+
+A plugin that needs Hex packages can be packaged as a Mix application with
+`mix kettlecorn.cook` and started with `Kettlecorn.start_link(app: dir)`.
+
+## Run submission tests with ExUnit
+
+ExUnit is part of the guest's runtime. This example runs a student's module
+and the grader's tests in a throwaway VM and returns the test summary.
+
+The submission and tests share the guest VM. A submission can alter the
+tests or forge the summary.
+
+```elixir
+submission = ~S"""
+defmodule Fizz do
+  def buzz(n) when rem(n, 15) == 0, do: "FizzBuzz"
+  def buzz(n) when rem(n, 3) == 0, do: "Fizz"
+  def buzz(n) when rem(n, 5) == 0, do: "Buzz"
+  def buzz(n), do: n
+end
+"""
+
+tests = ~S"""
+ExUnit.start(autorun: false, formatters: [])
+
+defmodule FizzTest do
+  use ExUnit.Case
+  test "multiples of 3", do: assert(Fizz.buzz(9) == "Fizz")
+  test "multiples of 5", do: assert(Fizz.buzz(10) == "Buzz")
+  test "multiples of 15", do: assert(Fizz.buzz(30) == "FizzBuzz")
+  test "others", do: assert(Fizz.buzz(7) == "7")
+end
+
+ExUnit.run() |> Map.new(fn {key, count} -> {Atom.to_string(key), count} end)
+"""
+
+{:ok, %{"value" => %{"failures" => 1} = summary}} =
+  Kettlecorn.run(submission <> tests,
+    max_memory: 128 * 1024 * 1024,
+    max_fuel: 100_000_000_000,
+    max_lifetime: 60_000,
+    timeout: 30_000
+  )
+
+summary
+```
+
+The last test fails: the submission returns `7`, not `"7"`. The summary is
+the map `ExUnit.run/0` returns, with the number of tests and failures.
+String keys keep the result independent of which atoms the host has loaded.
+
+## Next steps
+
+[Validating guest data](guest-data.livemd) covers constructors and nested
+results. [Running applications](../guides/running-applications.md) shows how
+to package a plugin and its dependencies as a cooked application.
