@@ -19,10 +19,32 @@ run *args:
 iex *args:
     nix run .#iex -- {{args}}
 
-test: test-stdio
+test: test-stdio test-host
+
+test-host:
+    {{runtime}} && cd host && mix test --exclude examples
 
 test-stdio:
     python3 c/test/stdio_test.py
+
+# Rust/Nix/Elixir formatting, unused dependencies, Credo and Reach. Needs `just deps`.
+lint:
+    cargo fmt --manifest-path launcher/Cargo.toml -- --check
+    nixpkgs-fmt --check flake.nix nix/*.nix
+    cd host && mix format --check-formatted && mix format --check-formatted $(find ../guest/lib -name '*.ex')
+    cd host && mix deps.unlock --check-unused && mix credo && mix reach.check --arch
+    cmp LICENSE host/LICENSE  # the Hex package carries a copy
+
+# Clippy, Elixir compilation with warnings as errors, Dialyzer and compile-time cycles.
+typecheck:
+    cargo clippy --manifest-path launcher/Cargo.toml --all-targets -- -D warnings
+    cd host && mix compile --force --warnings-as-errors
+    cd host && mix dialyzer --format short
+    cd host && mix xref graph --format cycles --label compile-connected --fail-above 0
+
+format:
+    nixpkgs-fmt flake.nix nix/*.nix
+    cd host && mix format && mix format $(find ../guest/lib -name '*.ex')
 
 # The runtime release archive (as the release workflow builds it), into ./release.
 release-archive:
@@ -33,6 +55,11 @@ release-archive:
 # Builds the checks, the release archive and the dev shell; uploads them to Cachix.
 cache-push:
     cachix watch-exec kettlecorn -- sh -c 'nix flake check --accept-flake-config && nix build --accept-flake-config --no-link .#release && nix develop --accept-flake-config -c true'
+
+# Install Hex, fetch host development dependencies, and build the runtime.
+deps:
+    cd host && mix local.hex --if-missing --force && mix deps.get
+    nix build .#runtime --no-link
 
 # After editing guest/hex/mix.exs: refresh mix.lock and the fetchMixDeps hash.
 update-guest-deps:
