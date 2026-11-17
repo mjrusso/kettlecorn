@@ -247,7 +247,9 @@ CI builds and uploads x86_64 Linux, ARM Linux and Apple silicon macOS. Use
 ## Native launcher
 
 `nix build .#launcher` builds the locked Rust package. Linux uses a static musl
-binary; macOS builds natively for Apple silicon. `nix flake check` runs cache
+binary; macOS builds natively for Apple silicon and uses the system libiconv.
+The macOS build rewrites the library path and signs the launcher after fixup so
+release archives run without Nix. `nix flake check` runs cache
 unit tests and the library's in-process guest tests, in addition to the host
 suite. For a local Rust test run, set `KETTLECORN_TEST_RUNTIME` to a built runtime
 and run `cargo test --release --manifest-path launcher/Cargo.toml`.
