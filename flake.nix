@@ -65,6 +65,11 @@
         inherit (beamPackages) erlang;
         elixirPkg = beamPackages.elixir;
         wasmtime = pkgs.wasmtime;
+        launcherPackages = if pkgs.stdenv.isLinux then pkgs.pkgsStatic else pkgs;
+        launcher = launcherPackages.callPackage ./nix/launcher.nix {
+          wasmtimeVersion = wasmtime.version;
+        };
+
         toolchain = pkgs.callPackage ./nix/toolchain.nix {
           inherit wasmtime;
           wasi-libc-src = wasi-libc;
@@ -112,7 +117,7 @@
       {
         packages = {
           default = otpWasi;
-          inherit openssl;
+          inherit openssl launcher;
           otp = otpWasi;
           inherit (toolchain) resourceDir sysroot compat cc;
         };
