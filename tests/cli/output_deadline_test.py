@@ -62,9 +62,7 @@ with tempfile.TemporaryDirectory() as directory:
     for name, code in [
         (
             "exit",
-            "Process.sleep(3000); "
-            + output
-            + '; File.write!("/finished", "done"); :erlang.halt(0)',
+            output + '; File.write!("/finished", "done"); :erlang.halt(0)',
         ),
         ("running", output + "; Process.sleep(:infinity)"),
     ]:
