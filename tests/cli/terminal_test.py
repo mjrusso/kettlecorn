@@ -1,4 +1,5 @@
 """Exercise IEx input and live geometry in a real terminal."""
+import errno
 import fcntl
 import os
 import pty
@@ -45,21 +46,39 @@ try:
     expect(b"EDIT=42")
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 5
+    shutdown_output = bytearray()
     while True:
+        # Terminal restoration can wait for unread PTY output to drain.
+        readable, _, _ = select.select([terminal], [], [], 0.02)
+        if readable:
+            try:
+                shutdown_output.extend(os.read(terminal, 65536))
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
         stopped, status = os.waitpid(pid, os.WNOHANG)
         if stopped:
-            assert os.waitstatus_to_exitcode(status) == 143, status
+            code = os.waitstatus_to_exitcode(status)
+            assert code == 143, f"expected exit 143, got {code}: {bytes(shutdown_output)!r}"
             break
-        assert time.monotonic() < deadline, "launcher did not stop after SIGTERM"
+        assert time.monotonic() < deadline, (
+            f"launcher did not stop after SIGTERM: {bytes(shutdown_output)!r}"
+        )
         time.sleep(0.02)
     print("terminal input, live geometry, and shutdown: ok")
 finally:
+    os.close(terminal)
     try:
         os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
-    os.close(terminal)
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            stopped, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if stopped:
+            break
+        assert time.monotonic() < deadline, "terminal child did not stop after SIGKILL"
+        time.sleep(0.02)

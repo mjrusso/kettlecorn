@@ -320,6 +320,8 @@ With piped input, IEx reads lines and exits at the end of input.
 
 The binary handles SIGINT, SIGTERM and SIGQUIT by cancelling the guest. The
 shell waits for it before restoring the terminal and removing the private root.
+Terminal restoration is best effort: a failure does not prevent root cleanup
+or replace the exit status.
 
 ## Runtime manifest
 

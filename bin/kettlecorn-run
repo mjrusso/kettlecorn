@@ -78,7 +78,8 @@ instance="$(mktemp -d "${TMPDIR:-/tmp}/kettlecorn-run.XXXXXX")"
 root="${instance}/root"
 saved_tty=""
 cleanup() {
-    [[ -n "${saved_tty}" ]] && stty "${saved_tty}" 2>/dev/null
+    # Restoration must not override the exit status or skip root cleanup.
+    [[ -n "${saved_tty}" ]] && stty "${saved_tty}" 2>/dev/null || true
     rm -rf "${instance}"
 }
 stop_child() {
