@@ -193,7 +193,15 @@
           };
         };
 
-        checks.runtime = runtime;
+        checks.host-tests = pkgs.callPackage ./nix/host-tests.nix {
+          inherit beamPackages runtime;
+        };
+
+        checks.launcher = launcher.overrideAttrs (_: {
+          doCheck = true;
+          cargoTestFlags = [ ];
+          KETTLECORN_TEST_RUNTIME = "${runtime}";
+        });
 
         checks.stdio = pkgs.runCommand "kettlecorn-stdio-tests"
           { nativeBuildInputs = [ pkgs.stdenv.cc pkgs.python3 erlang ]; }
@@ -211,6 +219,10 @@
           fi
           touch $out
         '';
+
+        checks.cli = pkgs.callPackage ./nix/cli-tests.nix {
+          inherit kettlecorn-run runtime;
+        };
 
         devShells = {
           ci = pkgs.mkShell {

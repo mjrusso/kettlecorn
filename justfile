@@ -147,6 +147,9 @@ release-checksums version:
 cache-push:
     cachix watch-exec kettlecorn -- sh -c 'nix flake check --accept-flake-config && nix build --accept-flake-config --no-link .#release && nix develop --accept-flake-config -c true'
 
+# CI checks that run outside `nix flake check`.
+ci: lint typecheck docs test-apps
+
 # Install Hex, fetch host development dependencies, and build the runtime.
 deps:
     cd host && mix local.hex --if-missing --force && mix deps.get

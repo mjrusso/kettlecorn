@@ -1,0 +1,114 @@
+# Cachix stores Nix outputs; the Actions cache stores Mix dependencies and PLTs.
+name: kettlecorn
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kettlecorn-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    name: nix flake check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/setup-nix
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix flake check -L
+      - run: nix develop .#ci -c sh -c 'cd host && mix local.hex --if-missing --force && MIX_ENV=test mix deps.get --only test'
+      - run: nix develop .#ci -c just test-apps
+      - name: Check the macOS release archive
+        if: runner.os == 'macOS'
+        run: |
+          nix build .#release -o release
+          mkdir extracted-runtime
+          tar -xzf release/*.tar.gz -C extracted-runtime
+          launcher=$(find extracted-runtime -name kettlecorn-launch -type f)
+          otool -L "$launcher" | tee launcher-links.txt
+          if grep -q /nix/store/ launcher-links.txt; then exit 1; fi
+          script=$(find extracted-runtime -name kettlecorn-run -type f)
+          env -u KETTLECORN_RUNTIME "$script" -e 'IO.puts("archive booted")'
+
+  checks:
+    name: lint, typecheck and docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/setup-nix
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # Dialyzer's PLTs take minutes to build; they depend on OTP, Elixir and
+      # the dependencies.
+      - name: Cache Mix dependencies and Dialyzer PLTs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            .nix-mix
+            host/deps
+            host/_build/dev
+          key: mix-kettlecorn-${{ runner.os }}-otp29-elixir1.20-${{ hashFiles('host/mix.lock', 'flake.lock') }}
+          restore-keys: mix-kettlecorn-${{ runner.os }}-otp29-elixir1.20-
+      - run: nix develop .#ci -c sh -c 'cd host && mix local.hex --if-missing --force && mix deps.get'
+      - run: nix develop .#ci -c just lint typecheck docs
+
+  release-archives:
+    name: Runtime archive (${{ matrix.os }})
+    needs: [flake-check, checks]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Check the release version
+        run: test "${GITHUB_REF_NAME#v}" = "$(cat host/VERSION)"
+      - uses: ./.github/actions/setup-nix
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build .#release -o release
+      - name: Save the platform archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-${{ matrix.os }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    name: Publish runtime archives
+    needs: release-archives
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: release
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Kettlecorn runtime ${GITHUB_REF_NAME#v}" \
+            --notes "Platform runtimes for Kettlecorn ${GITHUB_REF_NAME#v}. See host/CHANGELOG.md." \
+            release/*.tar.gz release/*.tar.gz.sha256
