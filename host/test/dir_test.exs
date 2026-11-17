@@ -69,8 +69,8 @@ defmodule Kettlecorn.DirTest do
     publishers =
       for value <- ["one", "two"], do: Task.async(fn -> Dir.replace(dir, build(value)) end)
 
-    for publisher <- publishers, do: assert(Task.await(publisher) == :ok)
-    Task.await(reader)
+    for publisher <- publishers, do: assert(Task.await(publisher, :infinity) == :ok)
+    Task.await(reader, :infinity)
   end
 
   test "refuses to replace an unmanaged directory", %{tmp_dir: tmp} do
