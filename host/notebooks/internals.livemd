@@ -129,7 +129,7 @@ run on one OS thread.
 
 ```elixir
 {:os_pid, os_pid} = Port.info(state.port, :os_pid)
-{ps, 0} = System.cmd("ps", ["-o", "pid,rss,command", "-p", Integer.to_string(os_pid)])
+{ps, 0} = System.cmd("ps", ["-o", "pid,command", "-p", Integer.to_string(os_pid)])
 IO.puts(ps)
 ```
 
