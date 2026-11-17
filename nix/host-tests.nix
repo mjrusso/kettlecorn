@@ -1,6 +1,6 @@
 # fetchMixDeps uses host/mix.lock for test dependencies; dev-only check
 # tools aren't fetched.
-{ lib, stdenv, beamPackages, procps, runtime }:
+{ beamPackages, unixtools, runtime }:
 let
   pname = "kettlecorn-host-tests";
   version = "unversioned";
@@ -15,7 +15,7 @@ beamPackages.mixRelease {
     mixEnv = "test";
     hash = "sha256-62rQBlYDMuBzdCo8lf+JG7Z9wAj5Wp18goUqbWWKp4A=";
   };
-  nativeBuildInputs = lib.optional stdenv.isLinux procps;
+  nativeBuildInputs = [ unixtools.ps ];
   env = {
     KETTLECORN_RUNTIME = "${runtime}";
   };

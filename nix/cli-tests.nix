@@ -1,8 +1,7 @@
-{ runCommand, lib, stdenv, procps, python3, kettlecorn-run, runtime }:
+{ runCommand, unixtools, python3, kettlecorn-run, runtime }:
 runCommand "kettlecorn-cli-tests"
 {
-  nativeBuildInputs = [ kettlecorn-run python3 ]
-    ++ lib.optional stdenv.hostPlatform.isLinux procps;
+  nativeBuildInputs = [ kettlecorn-run python3 unixtools.ps ];
   env.LANG = "C.UTF-8";
 }
   ''

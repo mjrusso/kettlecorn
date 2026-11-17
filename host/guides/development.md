@@ -110,6 +110,8 @@ and formatting do not build the runtime.
 in the Nix sandbox, excluding example app tests. It also checks the CLI
 (scripts, `-e`, and IEx) and the [generated versions table](#pinned-versions).
 `nix/cli-tests.nix` runs the executable test harnesses in `tests/cli/`.
+The CLI and host checks include the platform's `ps` package in their sandbox
+inputs to verify process cleanup on Linux and macOS.
 CI runs `just test-apps` outside the sandbox on Linux and macOS. Core host tests,
 native stdio tests, and notebooks run once per OS in `nix flake check`.
 
