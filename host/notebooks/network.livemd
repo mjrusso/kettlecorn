@@ -41,13 +41,23 @@ server on the host, on `127.0.0.1`:
 url = "http://127.0.0.1:#{port}/"
 ```
 
-This host-side loop returns a fixed response. Closing the listener stops it:
+This host-side loop reads complete request headers and returns a fixed response.
+Closing the listener stops it:
 
 ```elixir
+read_request = fn read_request, socket, received ->
+  if :binary.match(received, "\r\n\r\n") != :nomatch do
+    :ok
+  else
+    with {:ok, data} <- :gen_tcp.recv(socket, 0, 5_000),
+         do: read_request.(read_request, socket, received <> data)
+  end
+end
+
 serve = fn serve ->
   case :gen_tcp.accept(listener) do
     {:ok, socket} ->
-      with {:ok, _request} <- :gen_tcp.recv(socket, 0, 5_000) do
+      with :ok <- read_request.(read_request, socket, "") do
         body = "hello from the host"
 
         :gen_tcp.send(
