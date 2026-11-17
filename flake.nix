@@ -80,6 +80,40 @@
           otp-src = otp;
           popcorn-src = popcorn;
         };
+        guestDeps = pkgs.callPackage ./nix/guest-deps.nix { inherit beamPackages; };
+        version = lib.fileContents ./host/VERSION;
+        protocolVersion = lib.toInt (lib.fileContents ./host/PROTOCOL_VERSION);
+
+        runtime = pkgs.callPackage ./nix/runtime.nix {
+          manifest = {
+            kettlecorn = version;
+            protocol = protocolVersion;
+            otp = otpWasi.version;
+            elixir = elixirVersion;
+            # Hosts need the manifest's imports, component-model async and threading.
+            tested_with.wasmtime = wasmtime.version;
+            platform = system;
+          };
+          inherit guestDeps launcher;
+          elixir = elixirPkg;
+          otp = otpWasi;
+          licenseSources = {
+            kettlecorn.LICENSE = ./LICENSE;
+            otp = { "LICENSE.txt" = "${otp}/LICENSE.txt"; LICENSES = "${otp}/LICENSES"; };
+            elixir = { LICENSE = "${elixir}/LICENSE"; LICENSES = "${elixir}/LICENSES"; };
+            popcorn.LICENSE = "${popcorn}/LICENSE";
+            wasi-libc = lib.genAttrs [ "LICENSE" "LICENSE-APACHE" "LICENSE-APACHE-LLVM" "LICENSE-MIT" ]
+              (file: "${wasi-libc}/${file}");
+            compiler-rt."LICENSE.TXT" = "${toolchain.llvm.compiler-rt.src}/compiler-rt/LICENSE.TXT";
+            # The WIT files the wasi:http bindings are generated from.
+            wasi-http.LICENSE = "${wasmtime.src}/LICENSE";
+            openssl."LICENSE.txt" = pkgs.runCommand "openssl-license" { } ''
+              tar -xzf ${openssl.src} --strip-components=1 --wildcards '*/LICENSE.txt'
+              cp LICENSE.txt $out
+            '';
+          };
+        };
+
         basePackages = with pkgs; [
           git
           just
@@ -116,13 +150,13 @@
       in
       {
         packages = {
-          default = otpWasi;
-          inherit openssl launcher;
+          default = runtime;
+          inherit runtime guestDeps openssl launcher;
           otp = otpWasi;
           inherit (toolchain) resourceDir sysroot compat cc;
         };
 
-        checks.otp = otpWasi;
+        checks.runtime = runtime;
 
         checks.stdio = pkgs.runCommand "kettlecorn-stdio-tests"
           { nativeBuildInputs = [ pkgs.stdenv.cc pkgs.python3 erlang ]; }
