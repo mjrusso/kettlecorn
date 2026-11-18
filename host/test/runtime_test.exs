@@ -4,14 +4,17 @@ defmodule Kettlecorn.RuntimeTest do
 
   @moduletag :tmp_dir
 
-  test "rejects a runtime for another platform or without its launcher", %{tmp_dir: dir} do
+  test "rejects a runtime for another platform or missing executables", %{tmp_dir: dir} do
     runtime = TestRuntime.fixture(Path.join(dir, "runtime"), %{"platform" => "other-platform"})
     assert {:error, message} = Runtime.load(runtime)
     assert message =~ "runtime is for other-platform"
-    TestRuntime.fixture(runtime)
-    File.rm!(Path.join(runtime, "bin/kettlecorn-launch"))
-    assert {:error, message} = Runtime.load(runtime)
-    assert message =~ "no executable bin/kettlecorn-launch"
+
+    for name <- ["kettlecorn-launch", "kettlecorn-run"] do
+      TestRuntime.fixture(runtime)
+      File.rm!(Path.join([runtime, "bin", name]))
+      assert {:error, message} = Runtime.load(runtime)
+      assert message =~ "no executable bin/#{name}"
+    end
   end
 
   @tag :integration

@@ -58,9 +58,27 @@ defmodule Kettlecorn.Runtime do
     end
   end
 
+  @doc "Finds and loads a runtime using the discovery order of `dir/1`."
+  @spec find(keyword()) :: {:ok, t()} | {:error, String.t()}
+  def find(opts) do
+    case dir(opts) do
+      nil ->
+        {:error,
+         "No Kettlecorn runtime found: run `mix kettlecorn.install`, " <>
+           "or set :runtime / KETTLECORN_RUNTIME"}
+
+      dir ->
+        load(dir)
+    end
+  end
+
   @doc "The bundled native launcher for this runtime."
   @spec executable(t()) :: Path.t()
   def executable(%__MODULE__{dir: dir}), do: Path.join([dir, "bin", "kettlecorn-launch"])
+
+  @doc "The bundled script CLI for this runtime."
+  @spec cli(t()) :: Path.t()
+  def cli(%__MODULE__{dir: dir}), do: Path.join([dir, "bin", "kettlecorn-run"])
 
   @doc false
   def populate_root!(runtime, root, options) do
@@ -91,8 +109,9 @@ defmodule Kettlecorn.Runtime do
 
   @doc """
   Loads one generation of the runtime in `dir`, resolving its publication link.
-  Requires its manifest, executable launcher, `launch/` files, emulators and
+  Requires its manifest, executable launcher and CLI, `launch/` files, emulators and
   `root/`. Checks the host platform and the library's protocol version.
+  Both executables are required even when using only the host API.
   Raises if the runtime is incomplete or incompatible.
   """
   @spec load!(Path.t()) :: t()
@@ -109,7 +128,8 @@ defmodule Kettlecorn.Runtime do
     with {:ok, dir} <- Kettlecorn.Dir.resolve(dir),
          {:ok, manifest} <- manifest(dir),
          :ok <- platform(manifest),
-         :ok <- launcher(dir),
+         :ok <- executable_file(dir, "kettlecorn-launch"),
+         :ok <- executable_file(dir, "kettlecorn-run"),
          :ok <- Launch.validate(dir) do
       if File.dir?(Path.join(dir, "root")),
         do: {:ok, %__MODULE__{dir: dir, manifest: manifest}},
@@ -150,12 +170,12 @@ defmodule Kettlecorn.Runtime do
     end
   end
 
-  defp launcher(dir) do
-    path = Path.join([dir, "bin", "kettlecorn-launch"])
+  defp executable_file(dir, name) do
+    path = Path.join([dir, "bin", name])
 
     case File.stat(path) do
       {:ok, %{type: :regular, mode: mode}} when Bitwise.band(mode, 0o111) != 0 -> :ok
-      _ -> {:error, "#{dir} is not a complete runtime (no executable bin/kettlecorn-launch)"}
+      _ -> {:error, "#{dir} is not a complete runtime (no executable bin/#{name})"}
     end
   end
 end

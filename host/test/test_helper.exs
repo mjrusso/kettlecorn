@@ -53,14 +53,17 @@ defmodule TestRuntime do
     File.write!(Path.join(dir, "launch/module"), "beam.wasm\n")
     File.write!(Path.join(dir, "launch/http-module"), "beam-http.wasm\n")
     File.mkdir_p!(Path.join(dir, "bin"))
-    launcher = Path.join(dir, "bin/kettlecorn-launch")
 
-    if runtime = runtime() do
-      File.rm(launcher)
-      File.ln_s!(Path.join(runtime, "bin/kettlecorn-launch"), launcher)
-    else
-      File.write!(launcher, "#!/bin/sh\nexit 1\n")
-      File.chmod!(launcher, 0o755)
+    for name <- ["kettlecorn-launch", "kettlecorn-run"] do
+      executable = Path.join([dir, "bin", name])
+
+      if runtime = runtime() do
+        File.rm(executable)
+        File.ln_s!(Path.join([runtime, "bin", name]), executable)
+      else
+        File.write!(executable, "#!/bin/sh\nexit 1\n")
+        File.chmod!(executable, 0o755)
+      end
     end
 
     dir

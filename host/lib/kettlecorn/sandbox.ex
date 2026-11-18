@@ -192,12 +192,11 @@ defmodule Kettlecorn.Sandbox do
   def new(opts) do
     opts = Options.validate!(opts, @options_schema)
 
-    dir =
-      Kettlecorn.Runtime.dir(opts) ||
-        raise ArgumentError,
-              "no runtime: run `mix kettlecorn.install`, or set :runtime / KETTLECORN_RUNTIME"
-
-    runtime = Kettlecorn.Runtime.load!(dir)
+    runtime =
+      case Kettlecorn.Runtime.find(opts) do
+        {:ok, runtime} -> runtime
+        {:error, message} -> raise ArgumentError, message
+      end
 
     fields = Map.new(opts)
 
