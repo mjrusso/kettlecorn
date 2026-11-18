@@ -82,6 +82,7 @@ test-apps: build-examples
     (cd host && mix test test/apps_test.exs)
     bash bin/kettlecorn-run --app "$KETTLECORN_EXAMPLES/csv_stats" -e 'CsvStats.report()' | grep -E '^  east +948.00$'
     echo 'Counter.increment()' | bash bin/kettlecorn-run --app "$KETTLECORN_EXAMPLES/counter" --iex | grep -F 'iex(1)> 11'
+    (cd host && mix kettlecorn.run --app "$KETTLECORN_EXAMPLES/csv_stats" -e 'CsvStats.report()') | grep -E '^  east +948.00$'
 
 test-stdio:
     python3 c/test/stdio_test.py

@@ -3,6 +3,117 @@
 Start with the [package installation instructions](../README.md#installation).
 Read [sandbox and resource limits](sandbox.md) before running untrusted code.
 
+## Command line
+
+`kettlecorn-run` runs scripts, expressions, cooked applications, and IEx in a
+guest VM. It is included in every runtime. Each invocation uses a private
+writable copy of the guest filesystem, which is deleted when the command exits.
+
+### Install and invoke
+
+In a Mix project with the `kettlecorn` dependency:
+
+```sh
+mix deps.get
+mix kettlecorn.install
+mix kettlecorn.run -e 'IO.puts(Enum.sum(1..10))'
+```
+
+`mix kettlecorn.run` runs scripts and expressions through the runtime's `kettlecorn-run`.
+It uses `--runtime DIR`, `KETTLECORN_RUNTIME`, `config :kettlecorn, :runtime`,
+then the default installation directory. A missing runtime produces an error
+asking you to run `mix kettlecorn.install`; the task does not download one.
+Put an explicit `--runtime DIR` first in the Mix form so the task can find
+that runtime's CLI before the CLI itself parses the remaining arguments.
+It preserves standard input, output, and error, and exit status.
+If the host Mix process exits, its CLI child stops and removes the private guest root.
+It does not cook or start the host project's application. Supply `--app DIR`
+to start a cooked application in the guest.
+
+With `--iex`, the task validates the runtime, prints a shell-quoted standalone
+command, and exits without starting a guest:
+
+```sh
+mix kettlecorn.run --iex
+mix kettlecorn.run --app _kettlecorn --iex
+```
+
+Run the printed command in the same working directory to start IEx with
+Ctrl+C handling and live terminal resizing. The command includes the resolved
+runtime and all supplied arguments, including resource limits and script paths.
+`mix kettlecorn.run --iex --help` displays CLI help.
+
+For standalone use, download `kettlecorn-runtime-<version>-<system>.tar.gz`
+from [GitHub Releases](https://github.com/mjrusso/kettlecorn/releases).
+Choose the platform suffix:
+
+| Platform | Suffix |
+|---|---|
+| x86_64 Linux | `x86_64-linux` |
+| ARM64 Linux | `aarch64-linux` |
+| Apple silicon macOS | `aarch64-darwin` |
+
+Extract the archive and add its `bin` directory to your PATH. For example,
+on x86_64 Linux:
+
+```sh
+tar -xzf kettlecorn-runtime-0.1.0-x86_64-linux.tar.gz
+export PATH="$PWD/kettlecorn-runtime-0.1.0-x86_64-linux/bin:$PATH"
+kettlecorn-run --help
+```
+
+The standalone command requires Bash. OTP, Elixir, and Wasmtime are bundled;
+no Mix project or host Elixir installation is needed. Keep the extracted
+directory together: the script locates the runtime relative to itself.
+`--runtime DIR` or `KETTLECORN_RUNTIME` overrides that location.
+
+From a repository checkout with Nix flakes enabled and the
+[binary cache configured](development.md#binary-cache), use
+`nix run .#kettlecorn-run -- ARGS`. To install the command on your PATH, run
+`nix profile install .#kettlecorn-run`.
+
+### Scripts, expressions, and IEx
+
+Run these commands with the standalone CLI:
+
+```sh
+kettlecorn-run script.exs arg1 arg2
+kettlecorn-run -e 'IO.puts(Enum.sum(1..10))'
+kettlecorn-run --iex
+kettlecorn-run --iex script.exs
+kettlecorn-run --app _kettlecorn --iex
+```
+
+For scripts and expressions, `mix kettlecorn.run` accepts the same arguments.
+
+Put launcher options before the script path or `-e CODE`. Arguments after
+the script path become `System.argv()` in the guest. The script is copied to
+`/work/<name>`; other files beside it on the host are not copied. Package
+dependencies and files in a [cooked application](#cooking-mix-applications).
+Standard input can be piped to scripts or IEx. With `--iex script.exs`, the
+script runs before the first prompt.
+
+Expressions run with `-e` print only what the code writes. To print the
+inspected result through the host evaluation API, use
+`mix kettlecorn.eval 'Enum.sum(1..10)'`; it also supports `--erlang`.
+
+### Limits and network access
+
+The CLI has no memory, fuel, or lifetime limit unless you supply one:
+
+```sh
+kettlecorn-run --max-memory 536870912 --fuel 50000000000 --timeout 30s script.exs
+```
+
+`kettlecorn-run --help` is the authoritative list of options and their defaults.
+
+Network and HTTP grants default to off. Each grant allows any reachable
+destination. See [sandbox and resource limits](sandbox.md) and
+[HTTP and Req](#http-and-req) for grant and certificate behavior.
+
+For debugging with the Wasmtime CLI, see the development guide's
+[equivalent-command instructions](development.md#native-launcher).
+
 ## Cooking Mix applications
 
 A cooked application is a compiled Mix project and its dependencies,

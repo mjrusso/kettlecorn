@@ -62,9 +62,10 @@ the host library's documentation (ExDoc), rejects warnings, and checks local
 HTML links. Run it after documentation changes.
 
 `host/.reach.exs` encodes invariants below as call rules: nothing calls
-`binary_to_term`, only `Kettlecorn.VM` opens ports, only `Dir` and `Runtime` run
-external commands, only `Cook` turns strings into atoms, and the decoders of
-guest output (`Kettlecorn.ETF`, `Kettlecorn.Protocol`) do no I/O. A new caller
+`binary_to_term`, only `Kettlecorn.VM` opens ports, only `Dir`, `Runtime`, and
+`Mix.Tasks.Kettlecorn.Run` run external commands, only `Cook` turns strings
+into atoms, and the decoders of guest output (`Kettlecorn.ETF`,
+`Kettlecorn.Protocol`) do no I/O. A new caller
 of one of these changes an invariant: update the rule and its comment with it.
 
 `host/test/property_test.exs` (StreamData) checks the parsers of guest

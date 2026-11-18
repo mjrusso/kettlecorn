@@ -123,6 +123,14 @@ reaches the deadline, the launcher reports a timeout. Timeout, cancellation, fue
 exhaustion, and failure discard queued output so a stalled reader cannot delay
 termination publication or cleanup.
 
+## Mix task
+
+`mix kettlecorn.run` discovers an installed runtime and invokes its
+`bin/kettlecorn-run` with inherited standard I/O for scripts and expressions.
+It does not start a host VM or use the framed host protocol. The task owns
+the subprocess and an inherited control pipe on fd 3. When the host BEAM
+exits, the pipe closes, and the script stops its child and cleans up the private root.
+
 ## Threads
 
 Each guest executes on **one OS thread**. wasi-libc's cooperative threads make

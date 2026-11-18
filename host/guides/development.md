@@ -95,9 +95,10 @@ skips the two setup cells that install the published package and runtime.
 the core host tests (`just test-host`), and the cooked-app tests
 (`just test-apps`). `test-apps` builds the projects under `examples/apps/`
 with the real `mix kettlecorn.cook` task, sets `KETTLECORN_EXAMPLES` to
-`_kettlecorn/examples/`, runs `apps_test.exs`, and checks the CLI with cooked
-apps. Kettlecorn is a path dependency marked `runtime: false` in each example,
-so the task is available without packaging the host library into the guest.
+`_kettlecorn/examples/`, runs `apps_test.exs`, and checks both `kettlecorn-run`
+and `mix kettlecorn.run` with cooked apps. Kettlecorn is a path dependency
+marked `runtime: false` in each example, so the tasks are available without
+packaging the host library into the guest.
 Adding an example requires its project directory and tests; no flake entry or
 dependency hash is needed.
 
