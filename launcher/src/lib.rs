@@ -35,7 +35,7 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap, Upd
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::{I32Exit, WasiCtx, WasiCtxView, WasiView};
 
-pub const WASMTIME_VERSION: &str = "50.0.0";
+pub const WASMTIME_VERSION: &str = env!("KETTLECORN_WASMTIME_VERSION");
 
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
