@@ -182,6 +182,9 @@ impl Runtime {
         }
         args.push("-kettlecorn_apps".into());
         args.extend(options.apps.clone());
+        if options.network {
+            args.push("-kettlecorn_network".into());
+        }
         match &options.mode {
             Mode::Cli {
                 iex: true,
