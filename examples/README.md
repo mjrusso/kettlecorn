@@ -1,11 +1,10 @@
 # Examples
 
-Run these commands from the repository root. Configure the
-[binary cache](../host/guides/development.md#binary-cache) before the first
-Nix build. The commands use `kr` as shorthand:
+Install the CLI using the [CLI guide](../host/guides/running-applications.md#command-line),
+then run these commands from the repository root with `kr` as shorthand:
 
 ```bash
-alias kr='nix run .#kettlecorn-run --'
+alias kr=kettlecorn-run
 ```
 
 Console transcripts show representative output. PIDs, random bytes, response

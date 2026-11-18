@@ -16,15 +16,16 @@ Use it to isolate user code, plugins, or whole Mix applications.
 > an unfinished feature that Wasmtime leaves off by default.
 >
 > Bugs in Kettlecorn or its dependencies may compromise isolation. Set finite
-> `max_fuel` and `max_lifetime` limits for untrusted workloads. These constrain
-> guest execution; host memory and disk use need separate controls. Review [the
-> sandbox's limits and network grants](host/guides/sandbox.md).
+> `max_fuel` and `max_lifetime` limits for untrusted workloads, and apply separate
+> controls to host memory and disk use. See [sandbox limits and network
+> grants](host/guides/sandbox.md).
 
-Each VM runs OTP 29 and Elixir 1.20 under [Wasmtime](https://wasmtime.dev),
-in its own process with a private filesystem. Network access is off by default.
-Set `max_memory` to cap guest memory, `max_fuel` to limit execution, and
-`max_lifetime` to bound elapsed time. Fuel is measured roughly in WebAssembly
-instructions; fuel and lifetime limits cover startup and all evaluations.
+Each VM runs OTP 29 and Elixir 1.20 in a separate
+[Wasmtime](https://wasmtime.dev) process with a private filesystem. Network
+access is off by default. Set `max_memory` to cap guest memory, `max_fuel` to
+limit execution, and `max_lifetime` to bound elapsed time. Fuel is measured
+roughly in WebAssembly instructions; fuel and lifetime limits cover startup and
+all evaluations.
 
 ```elixir
 {:ok, vm} = Kettlecorn.start_link(max_fuel: 50_000_000_000, max_lifetime: 30_000)
@@ -39,19 +40,20 @@ Kettlecorn.eval(vm, ~S|IO.puts("hi"); Enum.map(1..3, fn n -> {n, n * n} end)|)
 Kettlecorn.stop(vm)
 ```
 
-Here, `"value"` is the returned list, `"inspected"` is its text representation,
-and `"output"` is captured stdout.
+Here, `"value"` is the result, `"inspected"` is its text representation, and
+`"output"` is captured stdout.
 
-Use Kettlecorn from your Elixir application or run scripts and IEx with
-`kettlecorn-run`. To run a Mix application in the sandbox, package it with
+For scripts and IEx, use
+[`kettlecorn-run`](host/guides/running-applications.md#command-line).
+To run a Mix application in the sandbox, package it with
 [`mix kettlecorn.cook`](host/guides/running-applications.md#cooking-mix-applications).
 
 ## Getting started
 
 ### In an Elixir application
 
-Requires Elixir 1.20 or later, on x86_64 or ARM64 Linux or Apple silicon macOS.
-Add the Hex dependency:
+Requires Elixir 1.20 or later on x86_64 or ARM64 Linux, or Apple silicon macOS.
+Add Kettlecorn to your Mix dependencies:
 
 ```elixir
 {:kettlecorn, "~> 0.1"}
@@ -64,8 +66,17 @@ mix deps.get
 mix kettlecorn.install
 ```
 
-The runtime includes Wasmtime; no separate installation is needed.
-See the [package documentation](host/README.md) for the API and deployment.
+The runtime bundles Wasmtime. See the
+[package documentation](host/README.md) for the API and deployment.
+
+Run a script from the same Mix project:
+
+```sh
+mix kettlecorn.run script.exs arg1 arg2
+```
+
+See [CLI installation and usage](host/guides/running-applications.md#command-line)
+for expressions, IEx, and runtime selection.
 
 ### In Livebook
 
@@ -73,12 +84,17 @@ See the [package documentation](host/README.md) for the API and deployment.
 
 Start with [Getting started](host/notebooks/getting-started.livemd), then
 [Working with guest VMs](host/notebooks/working-with-guests.livemd). Both
-install the published package and runtime. The remaining notebooks are
-independent:
+install the package and runtime. The other notebooks run independently:
 
 * [Use cases](host/notebooks/use-cases.livemd): user code, plugins, and submission tests.
 * [Network access](host/notebooks/network.livemd): sockets, HTTP, and denied operations.
 * [Validating guest data](host/notebooks/guest-data.livemd): constructors and nested results.
+
+### Standalone command line
+
+To use `kettlecorn-run` without a host Elixir installation, download a
+[runtime archive](https://github.com/mjrusso/kettlecorn/releases) and follow
+the [CLI installation guide](host/guides/running-applications.md#command-line).
 
 ### With Nix
 
@@ -89,15 +105,14 @@ From a checkout, with Nix flakes enabled and the
 nix run .#kettlecorn-run -- examples/01_hello.exs one two
 ```
 
-For IEx, run `nix run .#iex`. See the [examples](examples/README.md)
-for scripts and Mix applications.
+The [examples](examples/README.md) cover scripts and Mix applications.
 
 ## Documentation
 
 | Guide | Covers |
 |---|---|
 | [Sandbox and resource limits](host/guides/sandbox.md) | Isolation, fuel, memory, output, disk use, and network grants |
-| [Running applications](host/guides/running-applications.md) | Runtime archives, cooking Mix apps, deployment, HTTP, and IEx |
+| [Running applications](host/guides/running-applications.md) | CLI installation and usage, cooking Mix apps, deployment, HTTP, and IEx |
 | [Guest API](host/guides/guest-api.md) | Guest messages, host calls, HTTP requests, and streaming |
 | [Architecture](host/guides/architecture.md) | Host and guest processes, threads, OTP patches, framing, and Popcorn |
 | [Development](host/guides/development.md) | Nix setup, binary cache, build stages, checks, and pinned versions |

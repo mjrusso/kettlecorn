@@ -1,13 +1,14 @@
 # Kettlecorn
 
-Run untrusted Elixir and Erlang in a WebAssembly sandbox from your Elixir
-application. Evaluate code, call guest GenServers, or run whole Mix applications.
+Kettlecorn runs untrusted Elixir and Erlang in a WebAssembly sandbox.
+Use it from your Elixir application to evaluate code, call guest GenServers,
+or run whole Mix applications.
 
-Each VM runs OTP 29 and Elixir 1.20 in a separate process under
-[Wasmtime](https://wasmtime.dev). Guests see a private copy of the runtime's
-files and cannot start OS processes or load native code. By default, guests
-have no network access and a 512 MiB linear-memory cap. CPU and wall-clock
-limits are opt-in.
+Each VM runs OTP 29 and Elixir 1.20 in a separate
+[Wasmtime](https://wasmtime.dev) process with a private filesystem.
+Guests cannot start OS processes or load native code. Network access is off
+by default, and WebAssembly linear memory is capped at 512 MiB. Execution
+and lifetime limits are opt-in.
 
 > #### Experimental software {: .warning}
 >
@@ -96,12 +97,9 @@ Reuse a VM for repeated evaluations from the same tenant. Give mutually
 untrusted tenants separate VMs: modules, processes, and files persist
 between evaluations. See [VM reuse](guides/sandbox.md#reusing-vms).
 
-### Erlang and command-line use
+### Erlang use
 
-* **Erlang:** pass `language: :erlang` to `Kettlecorn.eval/3` for expressions
-  or module source.
-* **Command line:** `mix kettlecorn.eval 'Enum.sum(1..10)'` evaluates Elixir;
-  pass `--erlang` for Erlang.
+Pass `language: :erlang` to `Kettlecorn.eval/3` for expressions or module source.
 
 ### Guest events
 
@@ -109,6 +107,20 @@ With `owner: pid`, consume guest events and call `Kettlecorn.acknowledge(vm)`
 after each one. Exceeding the unacknowledged event count or byte budget stops
 the VM. See [sandbox and resource limits](guides/sandbox.md) for delivery
 budgets and host memory and disk controls.
+
+## Command line
+
+In a Mix project with the `kettlecorn` dependency and an installed runtime:
+
+```sh
+mix kettlecorn.run script.exs arg1 arg2
+```
+
+See the [CLI guide](guides/running-applications.md#command-line) for installation,
+expressions, IEx, and runtime selection.
+
+`mix kettlecorn.eval 'Enum.sum(1..10)'` uses the host evaluation API and
+prints the inspected result. Pass `--erlang` to evaluate Erlang.
 
 ## Mix applications
 

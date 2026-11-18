@@ -24,6 +24,8 @@ runCommand "${name}-release" { } ''
   From Elixir, use the `kettlecorn` Hex package (`mix kettlecorn.install`
   downloads this archive). `manifest.json` records component versions.
   `licenses/` contains their licenses.
+
+  See [CLI installation and usage](https://hexdocs.pm/kettlecorn/running-applications.html#command-line).
   EOF
   mkdir -p $out
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -c ${name} \
