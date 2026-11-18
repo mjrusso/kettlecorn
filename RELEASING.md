@@ -91,7 +91,7 @@ Run the `just` recipes in `nix develop`, from the repository root.
 
 ## Wasmtime updates
 
-When a Wasmtime release fixes a security issue, update nixpkgs and all three
-exact Wasmtime dependencies in `launcher/Cargo.toml`, refresh `Cargo.lock`,
+When a Wasmtime release fixes a security issue, follow the
+[Wasmtime update procedure](host/guides/development.md#pinned-versions),
 release Kettlecorn, and identify the security fix in the CHANGELOG. Users of
 `mix kettlecorn.install` receive the fix through that release.

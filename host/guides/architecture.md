@@ -355,7 +355,8 @@ Every runtime's `manifest.json` records:
   `beam-http.wasm` adds `wasi:http` at 0.3.0 (from wasmtime's WIT files);
 - `tested_with`: the Wasmtime version the checks ran against. The runtime needs
   component-model async and threading.
-  The native launcher embeds that exact version; `platform` selects its OS and CPU.
+  The native launcher embeds the version pinned in `launcher/Cargo.toml`;
+  `platform` selects its OS and CPU.
 
 The runtime and the guest application's version both come from `host/VERSION`.
 

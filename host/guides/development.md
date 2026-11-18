@@ -1,7 +1,7 @@
 # Development
 
 Run commands from the repository root. The Nix flake provides the compiler,
-Erlang, Elixir, Rust, Wasmtime, and the check tools; use its development shell.
+Erlang, Elixir, Rust, and the check tools; use its development shell.
 
 ## Binary cache
 
@@ -15,10 +15,12 @@ sudo on a multi-user install.
 
 Without the cache, the first build compiles LLVM's compiler-rt builtins,
 wasi-libc, OpenSSL, and OTP (a native bootstrap, then the cross build).
-LLVM, Erlang, Elixir, and Wasmtime come from the NixOS binary cache.
+LLVM, Erlang, and Elixir come from the NixOS binary cache.
+Wasmtime's source is fetched for its WIT files and license.
 
 Changes to `patches/otp/`, C build inputs, `nix/otp.nix`, `nix/toolchain.nix`,
-or pinned inputs can rebuild OTP. The compatibility build includes C sources
+the Wasmtime source pin in `launcher/Cargo.toml` and `flake.nix`, or pinned
+inputs can rebuild OTP. The compatibility build includes C sources
 in `c/src/`, headers in `c/include/`, and the HTTP client's C, header, and WIT
 files. C documentation and native tests are excluded from that source set;
 OTP integration files have separate inputs in `nix/otp.nix`.
@@ -175,7 +177,9 @@ LLVM is selected in `nix/toolchain.nix` and OpenSSL in `nix/openssl.nix`.
 The runtime licenses and generated versions table use those selections.
 
 Everything is pinned: flake inputs in `flake.lock`, the rest by the pinned
-nixpkgs. Elixir comes from the `elixir` flake input (an Elixir release tag),
+nixpkgs. Wasmtime's version comes from the launcher's dependency pin in
+`launcher/Cargo.toml`; `flake.nix` pins the matching source hash for WIT and LICENSE.
+Elixir comes from the `elixir` flake input (an Elixir release tag),
 built with nixpkgs' Elixir builder. The same Elixir compiles the guest code
 (Elixir's own applications, Req, cooked apps) and runs the host library. The
 guest's OTP comes from the `otp` input, and its major release must match the
@@ -189,7 +193,7 @@ host Erlang's.
 | Elixir | 1.20.5 | flake input `elixir` |
 | Popcorn | `55e87e7` (2026-11-10) | flake input `popcorn` (main) |
 | wasi-libc | `c3a02dc` (2026-11-10) | flake input `wasi-libc` |
-| wasmtime | 50.0.0 | nixpkgs |
+| wasmtime | 50.0.2 | `launcher/Cargo.toml` |
 | Rust (launcher) | 1.99.1 | nixpkgs |
 | LLVM (clang, lld, compiler-rt) | 23.1.3 | nixpkgs |
 | OpenSSL | 3.5.9 | nixpkgs |
@@ -201,6 +205,12 @@ host Erlang's.
 to Popcorn's latest commit, and `just update` updates every input. Each one
 rewrites this table; run `nix flake check` afterwards, because a new Popcorn
 or OTP can make a patch stop applying.
+
+To update Wasmtime, edit the three exact `=` pins in `launcher/Cargo.toml`,
+run `cargo update --manifest-path launcher/Cargo.toml -p wasmtime`, refresh
+the source hash in `flake.nix`, run `just docs-versions`, then run
+`nix flake check`. Keep the version in the fetched source's name so a stale
+hash cannot reuse another release's source tree.
 
 ### Mix dependency hashes
 

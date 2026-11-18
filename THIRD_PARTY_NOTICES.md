@@ -4,8 +4,12 @@ Kettlecorn is licensed under the [Apache License 2.0](LICENSE).
 
 ## In this repository
 
-The Nix build fetches third-party sources from pinned flake inputs
-(`flake.lock`) and nixpkgs. The files below reference or modify those sources:
+The Nix build fetches third-party sources using pinned flake inputs
+(`flake.lock`), nixpkgs, `launcher/Cargo.lock`, `guest/hex/mix.lock`, and
+`host/mix.lock`.
+Wasmtime's WIT files and license come from the version in `launcher/Cargo.toml`,
+with a source hash in `flake.nix`.
+The files below reference or modify those sources:
 
 * [`patches/otp/`](patches/otp): changes to
   [Erlang/OTP](https://github.com/erlang/otp) (Apache-2.0), applied on top of

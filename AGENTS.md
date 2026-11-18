@@ -27,7 +27,8 @@ keeps Mix and Hex in `.nix-mix/` and `.nix-hex/` under the directory it was
 entered from: enter it from this directory. `just deps` installs Hex,
 fetches the host library's dev dependencies and builds the runtime. Configure
 the binary cache before building. Changes to `patches/otp/`, C build
-inputs, `nix/otp.nix`, `nix/toolchain.nix` or pinned inputs can rebuild OTP.
+inputs, `nix/otp.nix`, `nix/toolchain.nix`, the Wasmtime source pin in
+`launcher/Cargo.toml` and `flake.nix`, or pinned inputs can rebuild OTP.
 The compatibility build excludes C documentation, native tests, and the OTP
 integration files; `nix/otp.nix` depends on the integration files separately.
 
@@ -138,13 +139,19 @@ change: the library refuses runtimes with another one.
 ## Pinned inputs
 
 - Versions come from the flake inputs (Popcorn tracks main; OTP, Elixir and
-  wasi-libc are pinned to a tag or commit in `flake.nix`) and nixpkgs. The
+  wasi-libc are pinned to a tag or commit in `flake.nix`), nixpkgs, and the
+  Wasmtime dependency pin in `launcher/Cargo.toml`. The
   development guide's versions table is generated (`just docs-versions`), and
   `nix flake check` fails when it's stale.
 - `just update-elixir` (latest Elixir release), `just update-popcorn`
   (Popcorn's latest commit), `just update` (every input). Run
   `nix flake check` after each. A new OTP release must match the host Erlang
   in nixpkgs, and every patch must still apply.
+- To update Wasmtime, edit the three exact `=` pins in `launcher/Cargo.toml`,
+  run `cargo update --manifest-path launcher/Cargo.toml -p wasmtime`, refresh
+  the source hash in `flake.nix`, run `just docs-versions`, then run
+  `nix flake check`. Keep the version in the fetched source's name so a stale
+  hash cannot reuse another release's source tree.
 - After editing `guest/hex/mix.exs`, run `just update-guest-deps` to refresh
   `mix.lock` and the `fetchMixDeps` hash (it fails, restoring the old hash,
   when the build fails for another reason). A stale hash goes unnoticed
