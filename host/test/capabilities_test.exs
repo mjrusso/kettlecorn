@@ -420,9 +420,9 @@ defmodule Kettlecorn.CapabilitiesTest do
   end
 
   describe "Req" do
-    test "uses Kettlecorn.HTTP (wasi:http) by default with http: true" do
+    test "uses Kettlecorn.HTTP (wasi:http) by default when both grants are enabled" do
       port = start_http_server()
-      vm = start_vm(http: true)
+      vm = start_vm(network: true, http: true)
 
       code = """
       {:ok, _} = Application.ensure_all_started(:req)
@@ -543,30 +543,88 @@ defmodule Kettlecorn.CapabilitiesTest do
              ]
     end
 
-    test "uses Finch over sockets with network: true" do
+    test "leaves Req's default adapter unchanged with network: true" do
       port = start_http_server()
       vm = start_vm(network: true)
 
       code = """
       {:ok, _} = Application.ensure_all_started(:req)
       r = Req.get!("http://localhost:#{port}/finch", retry: false)
-      {inspect(Req.default_options()[:adapter]), r.status, r.body}
+      {Req.default_options()[:adapter], r.status, r.body}
       """
 
-      assert {:ok, %{"value" => {"nil", 201, "GET /finch  "}}} = Kettlecorn.eval(vm, code)
+      assert {:ok, %{"value" => {nil, 201, "GET /finch  "}}} = Kettlecorn.eval(vm, code)
     end
 
-    test "fails without a grant" do
+    test "HTTP and HTTPS report disabled networking before transport setup" do
       vm = start_vm()
 
       code = """
-      {:ok, _} = Application.ensure_all_started(:req)
-      {:error, e} = Req.get("http://127.0.0.1:1/", retry: false)
-      {inspect(e.__struct__), e.reason}
+      for scheme <- ["http", "https"] do
+        url = scheme <> "://example.test/"
+        {:error, error} = Req.get(url, retry_delay: fn _ -> raise "permission error retried" end)
+
+        raised = try do
+          Req.get!(url)
+        rescue
+          exception -> {inspect(exception.__struct__), Exception.message(exception)}
+        end
+
+        {inspect(error.__struct__), to_string(error.reason), Exception.message(error), raised}
+      end
       """
 
-      assert {:ok, %{"value" => {"Req.TransportError", :eacces}}} =
-               Kettlecorn.eval(vm, code)
+      assert {:ok, %{"value" => results}} = Kettlecorn.eval(vm, code)
+
+      for {type, reason, message, raised} <- results do
+        assert type == "Kettlecorn.NetworkDisabledError"
+        assert reason == "network_disabled"
+        assert message =~ "Outgoing HTTP is disabled"
+        assert message =~ "--http (http: true)"
+        assert message =~ "--network (network: true)"
+        assert raised == {type, message}
+      end
+    end
+
+    @tag :tmp_dir
+    test "configured adapters are preserved with and without grants", %{tmp_dir: tmp} do
+      app = Path.join(tmp, "app")
+      config = Path.join(tmp, "config.exs")
+      build = Path.join(tmp, "build")
+      ebin = Path.join([build, "configured", "ebin"])
+      File.mkdir_p!(ebin)
+
+      File.write!(
+        Path.join(ebin, "configured.app"),
+        ~s|{application, configured, [{applications, [kernel, stdlib]}, {modules, []}, {vsn, "0.1.0"}]}.\n|
+      )
+
+      File.write!(
+        config,
+        "import Config\nconfig :req, default_options: [adapter: OfflineAdapter]\n"
+      )
+
+      assert {:ok, _} =
+               Kettlecorn.Cook.cook(
+                 app: :configured,
+                 build: build,
+                 out: app,
+                 config: config,
+                 runtime: TestRuntime.runtime()
+               )
+
+      code = """
+      defmodule OfflineAdapter do
+        def run(request), do: {request, Req.Response.new(status: 200, body: "configured")}
+      end
+
+      Req.get!("https://example.test/").body
+      """
+
+      for grants <- [[], [network: true, http: true]] do
+        vm = start_vm([app: app] ++ grants)
+        assert {:ok, %{"value" => "configured"}} = Kettlecorn.eval(vm, code)
+      end
     end
   end
 

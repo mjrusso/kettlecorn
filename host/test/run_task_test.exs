@@ -23,6 +23,15 @@ defmodule Kettlecorn.RunTaskTest do
   end
 
   @tag :integration
+  test "HTTP requests without grants explain how to enable access", %{tmp_dir: dir} do
+    assert {output, 1} =
+             run_task(["-e", ~s|Req.get!("https://example.test/")|], dir)
+
+    assert output =~ "Kettlecorn.NetworkDisabledError"
+    assert output =~ "--http"
+  end
+
+  @tag :integration
   test "an explicit runtime can have a symlinked parent directory", %{tmp_dir: dir} do
     parent = Path.join(dir, "real")
     TestRuntime.fixture(Path.join(parent, "runtime"))
