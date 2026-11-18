@@ -13,6 +13,27 @@ defmodule TestRuntime do
   end
 
   def fixture(dir, overrides \\ %{}) do
+    File.mkdir_p!(Path.join(dir, "bin"))
+
+    wasmtime =
+      if runtime = runtime() do
+        for name <- ["kettlecorn-launch", "kettlecorn-run"] do
+          executable = Path.join([dir, "bin", name])
+          File.rm(executable)
+          File.ln_s!(Path.join([runtime, "bin", name]), executable)
+        end
+
+        Kettlecorn.Runtime.load!(runtime).manifest.tested_wasmtime
+      else
+        for name <- ["kettlecorn-launch", "kettlecorn-run"] do
+          executable = Path.join([dir, "bin", name])
+          File.write!(executable, "#!/bin/sh\nexit 1\n")
+          File.chmod!(executable, 0o755)
+        end
+
+        "0.0.0"
+      end
+
     File.mkdir_p!(Path.join(dir, "root/lib/kernel/ebin"))
     File.mkdir_p!(Path.join(dir, "root/lib/stdlib/ebin"))
     File.write!(Path.join(dir, "root/lib/kernel/ebin/x.beam"), "x")
@@ -27,7 +48,7 @@ defmodule TestRuntime do
           "elixir" => System.version(),
           "imports" => %{},
           "platform" => elem(Kettlecorn.Platform.current(), 1),
-          "tested_with" => %{"wasmtime" => "50.0.0"}
+          "tested_with" => %{"wasmtime" => wasmtime}
         },
         overrides
       )
@@ -52,20 +73,6 @@ defmodule TestRuntime do
 
     File.write!(Path.join(dir, "launch/module"), "beam.wasm\n")
     File.write!(Path.join(dir, "launch/http-module"), "beam-http.wasm\n")
-    File.mkdir_p!(Path.join(dir, "bin"))
-
-    for name <- ["kettlecorn-launch", "kettlecorn-run"] do
-      executable = Path.join([dir, "bin", name])
-
-      if runtime = runtime() do
-        File.rm(executable)
-        File.ln_s!(Path.join([runtime, "bin", name]), executable)
-      else
-        File.write!(executable, "#!/bin/sh\nexit 1\n")
-        File.chmod!(executable, 0o755)
-      end
-    end
-
     dir
   end
 
