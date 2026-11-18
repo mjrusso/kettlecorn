@@ -154,15 +154,19 @@ end
 if Code.ensure_loaded?(Req) do
   defmodule Kettlecorn.HTTP.ReqAdapter do
     @moduledoc """
-    A Req adapter over `Kettlecorn.HTTP` (`wasi:http`). The guest installs it
-    as Req's default adapter when the VM may use HTTP; otherwise Req uses
-    Finch over sockets (which needs `network: true`).
+    A Req adapter over `Kettlecorn.HTTP` (`wasi:http`).
 
     Supports Req's `:into` with a function or a collectable; not `into: :self`.
     Transport errors are `Req.TransportError` exceptions.
     Collectables receive `:done` on success and `:halt` on transport errors
     or exceptions. Exceptions propagate after cleanup.
     """
+
+    defmodule Disabled do
+      @moduledoc false
+
+      def run(request), do: {request, %Kettlecorn.NetworkDisabledError{}}
+    end
 
     def run(%Req.Request{} = request) do
       opts =

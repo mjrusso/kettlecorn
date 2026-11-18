@@ -9,6 +9,9 @@ defmodule Kettlecorn.Boot do
   @cooked_config ~c"/app/sys.config"
   @cooked_libs "/app/lib/*/ebin"
 
+  @doc false
+  def network_granted?, do: :init.get_argument(:kettlecorn_network) != :error
+
   def start do
     # https://github.com/erlang/otp/issues/12119: loading these lazily from
     # inside an evaluation can deadlock the code server.

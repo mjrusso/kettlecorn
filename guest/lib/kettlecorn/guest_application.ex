@@ -2,6 +2,9 @@ defmodule Kettlecorn.GuestApplication do
   @moduledoc false
   use Application
 
+  alias Kettlecorn.Boot
+  alias Kettlecorn.HTTP.ReqAdapter
+
   @impl true
   def start(_type, _args) do
     # Try the WASI DNS NIF before guest host files; DNS requires the network grant.
@@ -12,10 +15,17 @@ defmodule Kettlecorn.GuestApplication do
   end
 
   defp install_req_adapter do
-    if Code.ensure_loaded?(Kettlecorn.HTTP.ReqAdapter) and Kettlecorn.HTTP.available?() do
-      opts = Application.get_env(:req, :default_options, [])
-      opts = Keyword.put_new(opts, :adapter, Kettlecorn.HTTP.ReqAdapter)
-      Application.put_env(:req, :default_options, opts)
+    if Code.ensure_loaded?(ReqAdapter) do
+      cond do
+        Kettlecorn.HTTP.available?() -> put_default_adapter(ReqAdapter)
+        Boot.network_granted?() -> :ok
+        true -> put_default_adapter(ReqAdapter.Disabled)
+      end
     end
+  end
+
+  defp put_default_adapter(adapter) do
+    opts = Application.get_env(:req, :default_options, [])
+    Application.put_env(:req, :default_options, Keyword.put_new(opts, :adapter, adapter))
   end
 end
