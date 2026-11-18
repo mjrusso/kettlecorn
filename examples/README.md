@@ -112,8 +112,8 @@ TCP via wasi:sockets (:gen_tcp)
   HTTP/1.0 200 OK
 ```
 
-Req is in the runtime too. Plain `Req.get!/2` goes through `Kettlecorn.HTTP`
-with `--http`, and through Finch over sockets with `--network`.
+Req is in the runtime too; see [HTTP and Req](../host/guides/running-applications.md#http-and-req)
+for its transports and grant behavior.
 
 ## Interactive IEx
 
