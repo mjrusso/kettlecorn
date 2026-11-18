@@ -48,7 +48,7 @@ just example counter                      # IEx with a cooked application
 Run `just` for the available tasks. The [examples](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md)
 include scripts and cooked applications.
 
-Python is used by development checks.
+Python and Fish are used by development checks.
 
 ## Repository layout
 

@@ -1,13 +1,20 @@
-{ runCommand, unixtools, python3, kettlecorn-run, runtime }:
+{ runCommand, unixtools, python3, fish, kettlecorn-run, runtime }:
 runCommand "kettlecorn-cli-tests"
 {
-  nativeBuildInputs = [ kettlecorn-run python3 unixtools.ps ];
+  nativeBuildInputs = [ kettlecorn-run python3 fish unixtools.ps ];
   env.LANG = "C.UTF-8";
 }
   ''
     export HOME=$TMPDIR
     set -x
     kettlecorn-run --help | grep -F 'deleted afterwards.'
+    KETTLECORN_MIX=1 kettlecorn-run --iex -h | grep -F 'kettlecorn-run [options]'
+    for cli_args in '--unknown-option' '--unknown-option --iex' '--iex --unknown-option'; do
+      cli_status=0
+      KETTLECORN_MIX=1 kettlecorn-run $cli_args > invalid.out 2> invalid.err || cli_status=$?
+      test "$cli_status" -eq 64
+      grep -F 'unknown option --unknown-option' invalid.err
+    done
     mkdir runtime
     cp -R ${runtime}/launch runtime/
     chmod -R u+w runtime/launch
@@ -16,6 +23,7 @@ runCommand "kettlecorn-cli-tests"
     kettlecorn-run --runtime "$PWD/runtime" --network -e 'IO.puts(:launch_ok)' | grep -x launch_ok
     kettlecorn-run ${../examples/01_hello.exs} one two | grep -F 'Arguments: ["one", "two"]'
     kettlecorn-run -e 'IO.puts(Enum.sum(1..10))' | grep -x 55
+    KETTLECORN_MIX=1 kettlecorn-run -e 'IO.puts(:no_parent_pipe)' 3<&- | grep -x no_parent_pipe
     cli_status=0
     kettlecorn-run -e ':erlang.halt(~c"kettlecorn-fatal-test")' > fatal.out 2> fatal.err || cli_status=$?
     test "$cli_status" -eq 1
@@ -63,6 +71,7 @@ runCommand "kettlecorn-cli-tests"
       [[ "$cli_processes" != *"$PWD/instances/"* ]]
     done
     python3 ${../tests/cli/terminal_test.py} kettlecorn-run
+    python3 ${../tests/cli/quoting_test.py} ${runtime}
     python3 ${../tests/cli/startup_test.py} ${runtime}
     python3 ${../tests/cli/output_deadline_test.py} ${runtime} kettlecorn-run
     touch $out

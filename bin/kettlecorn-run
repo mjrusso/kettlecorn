@@ -30,10 +30,8 @@
 # .beam files), the cooked app at /app if supplied, the script at /work/<name>,
 # and stdin/stdout/stderr. No network unless granted, no other host files,
 # no OS processes. The copy is deleted afterwards.
-# `nix run .#kettlecorn-run` sets the runtime.
 set -euo pipefail
 runtime="${KETTLECORN_RUNTIME:-}"
-# In a release archive the script sits in <runtime>/bin.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -z "${runtime}" && -f "${here}/../manifest.json" ]] && runtime="$(cd "${here}/.." && pwd)"
 limits=()
@@ -42,7 +40,25 @@ http=false
 cacertfile=""
 app=""
 iex=false
+original_args=("$@")
 usage() { sed -n '2,/^[^#]/{ /^[^#]/q; s/^# \{0,1\}//; p; }' "$0"; }
+print_command() {
+    local separator="" arg index character
+    for arg in "$@"; do
+        printf "%s'" "${separator}"
+        for ((index=0; index<${#arg}; index++)); do
+            character=${arg:index:1}
+            # Fish also interprets backslashes inside single quotes.
+            case "${character}" in
+                "'"|\\) printf "%s" "'\\${character}'" ;;
+                *) printf "%s" "${character}" ;;
+            esac
+        done
+        printf "'"
+        separator=" "
+    done
+    printf '\n'
+}
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --runtime) runtime="$2"; shift 2 ;;
@@ -68,6 +84,11 @@ runtime="$(cd "${runtime}" && pwd -P)"
 [[ $# -ge 1 || "${iex}" == true || -n "${app}" ]] || { usage >&2; exit 64; }
 [[ -z "${app}" || ( -f "${app}/app" && -f "${app}/kettlecorn.json" ) ]] || { echo "kettlecorn-run: ${app} is not a cooked app" >&2; exit 64; }
 [[ -z "${cacertfile}" || -f "${cacertfile}" ]] || { echo "kettlecorn-run: ${cacertfile} is not a file" >&2; exit 64; }
+if [[ "${KETTLECORN_MIX:-}" == 1 && "${iex}" == true ]]; then
+    echo "Run this command in your terminal to start IEx:" >&2
+    print_command "${here}/kettlecorn-run" "${original_args[@]}"
+    exit 0
+fi
 if [[ "${network}" == true && -z "${cacertfile}" ]]; then
     for f in "${SSL_CERT_FILE:-}" /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
         if [[ -f "${f}" ]]; then cacertfile="${f}"; break; fi
@@ -77,7 +98,12 @@ fi
 instance="$(mktemp -d "${TMPDIR:-/tmp}/kettlecorn-run.XXXXXX")"
 root="${instance}/root"
 saved_tty=""
+parent_watcher=""
 cleanup() {
+    if [[ -n "${parent_watcher}" ]]; then
+        kill -TERM "${parent_watcher}" 2>/dev/null || true
+        wait "${parent_watcher}" 2>/dev/null || true
+    fi
     # Restoration must not override the exit status or skip root cleanup.
     [[ -n "${saved_tty}" ]] && stty "${saved_tty}" 2>/dev/null || true
     rm -rf "${instance}"
@@ -96,6 +122,17 @@ trap cleanup EXIT
 trap 'stop_child INT 130' INT
 trap 'stop_child TERM 143' TERM
 trap 'stop_child QUIT 131' QUIT
+watch_parent() {
+    if [[ "${KETTLECORN_MIX:-}" == 1 && -e /dev/fd/3 ]]; then
+        # Mix's nouse_stdio control pipe is fd 3; EOF means its BEAM exited.
+        (
+            trap - EXIT INT TERM QUIT
+            while IFS= read -r _; do :; done <&3
+            kill -TERM "$$" 2>/dev/null || true
+        ) &
+        parent_watcher=$!
+    fi
+}
 run_child() {
     (
         trap - INT QUIT
@@ -104,6 +141,7 @@ run_child() {
     child_pid=$!
     wait "${child_pid}"
 }
+watch_parent
 prepare=(--prepare-root --runtime "${runtime}" --root "${root}")
 [[ -n "${app}" ]] && prepare+=(--app-dir "${app}")
 [[ "${network}" == true && -n "${cacertfile}" ]] && prepare+=(--certificates "${cacertfile}")
