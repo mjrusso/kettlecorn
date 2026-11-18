@@ -118,15 +118,11 @@
         kettlecorn-run = pkgs.runCommand "kettlecorn-run"
           {
             nativeBuildInputs = [ pkgs.makeWrapper ];
-            buildInputs = [ pkgs.bash ];
             meta.mainProgram = "kettlecorn-run";
           }
           ''
-            install -Dm755 ${./bin/kettlecorn-run} $out/libexec/kettlecorn-run
-            patchShebangs --host $out/libexec
-            makeWrapper $out/libexec/kettlecorn-run $out/bin/kettlecorn-run \
-              --set-default KETTLECORN_RUNTIME ${runtime} \
-              --prefix PATH : ${lib.makeBinPath (with pkgs; [ coreutils gnused gawk ])}
+            makeWrapper ${runtime}/bin/kettlecorn-run $out/bin/kettlecorn-run \
+              --prefix PATH : ${lib.makeBinPath (with pkgs; [ coreutils gnused ])}
           '';
 
         release = pkgs.callPackage ./nix/release.nix {

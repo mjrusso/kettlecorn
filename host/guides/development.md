@@ -146,8 +146,8 @@ Each stage is a separately cached derivation (`nix build .#<name>`):
 | `otp` | `nix/otp.nix` | Popcorn's patches + [Kettlecorn's](https://github.com/mjrusso/kettlecorn/blob/main/patches/README.md), native bootstrap, cross build: `beam.wasm`, `beam-http.wasm`, kernel/stdlib/compiler/crypto/asn1/public_key/ssl |
 | `guestDeps` | `nix/guest-deps.nix` | Req and its dependencies from Hex ([`guest/hex/mix.lock`](https://github.com/mjrusso/kettlecorn/blob/main/guest/hex/mix.lock), `fetchMixDeps`) |
 | `launcher` | `nix/launcher.nix` | locked Rust execution library and binary; static musl on Linux, native on Apple silicon |
-| `runtime` (default) | `nix/runtime.nix` | the native launcher, emulators and guest file system root: OTP and Elixir apps, Hex packages, the `kettlecorn_guest` app |
-| `kettlecorn-run` (`apps.default`) | `flake.nix` | [`bin/kettlecorn-run`](https://github.com/mjrusso/kettlecorn/blob/main/bin/kettlecorn-run) configured with the runtime path; `apps.iex` adds `--iex` |
+| `runtime` (default) | `nix/runtime.nix` | the native launcher and CLI, emulators and guest file system root: OTP and Elixir apps, Hex packages, the `kettlecorn_guest` app |
+| `kettlecorn-run` (`apps.default`) | `flake.nix` | wraps the runtime's `bin/kettlecorn-run` with host tools on PATH; the script finds its runtime relative to its installed location; `apps.iex` adds `--iex` |
 
 The toolchain uses nixpkgs' **unwrapped clang 23**, the first release with
 component-model threading, plus lld, `wasm-component-ld`, `wit-bindgen`,

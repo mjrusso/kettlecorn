@@ -6,8 +6,9 @@ in
 runCommand "${name}-release" { } ''
   mkdir -p ${name}/bin
   cp -R ${runtime}/. ${name}/
-  cp ${../bin/kettlecorn-run} ${name}/bin/kettlecorn-run
   chmod -R u+w ${name}
+  # Restore the portable shebang after the Nix runtime's fixup phase.
+  cp ${../bin/kettlecorn-run} ${name}/bin/kettlecorn-run
   chmod 755 ${name}/bin/kettlecorn-run
   cat > ${name}/README.md <<'EOF'
   # Kettlecorn runtime ${version}

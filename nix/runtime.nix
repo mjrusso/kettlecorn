@@ -84,6 +84,7 @@ stdenvNoCC.mkDerivation {
     mkdir -p $out
     mkdir -p $out/bin
     cp ${lib.getExe launcher} $out/bin/kettlecorn-launch
+    install -m755 ${../bin/kettlecorn-run} $out/bin/kettlecorn-run
     mkdir -p $out/licenses
     cp -R ${launcher}/share/licenses/kettlecorn-launcher $out/licenses/launcher
     cp ${otp}/beam.wasm ${otp}/beam-http.wasm $out/
