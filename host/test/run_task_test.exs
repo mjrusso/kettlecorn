@@ -114,6 +114,37 @@ defmodule Kettlecorn.RunTaskTest do
   end
 
   @tag :integration
+  test "IEx handoff preserves HTTP and network grants", %{tmp_dir: dir} do
+    {:ok, listener} = :gen_tcp.listen(0, ip: {127, 0, 0, 1}, active: false)
+    {:ok, port} = :inet.port(listener)
+    input_file = Path.join(dir, "stdin")
+    File.write!(input_file, ":ok\n")
+
+    code = """
+    true = Kettlecorn.HTTP.available?()
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, #{port}, [], 2_000)
+    :gen_tcp.close(socket)
+    IO.puts(:grants_enabled)
+    """
+
+    assert {command, 0} =
+             System.cmd(
+               "mix",
+               ["kettlecorn.run", "--http", "--network", "--iex", "-e", code],
+               Keyword.delete(task_options(dir, TestRuntime.runtime()), :stderr_to_stdout)
+             )
+
+    assert {output, 0} =
+             with_stdin(
+               String.trim(command),
+               input_file,
+               task_options(dir, TestRuntime.runtime())
+             )
+
+    assert output =~ "grants_enabled\n"
+  end
+
+  @tag :integration
   test "exiting the host Mix process stops the CLI and removes its root", %{tmp_dir: dir} do
     instances = Path.join(dir, "instances")
     File.mkdir_p!(instances)
