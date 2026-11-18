@@ -1,10 +1,9 @@
-{ lib, stdenv, rustPlatform, pkg-config, cmake, perl, libiconv, darwin, wasmtimeVersion }:
+{ lib, stdenv, rustPlatform, pkg-config, cmake, perl, libiconv, darwin }:
 let
   cargo = builtins.fromTOML (builtins.readFile ../launcher/Cargo.toml);
 in
-assert cargo.package.metadata.kettlecorn.wasmtime == wasmtimeVersion;
-assert lib.all (name: cargo.dependencies.${name}.version == "=${wasmtimeVersion}")
-  [ "wasmtime" "wasmtime-wasi" "wasmtime-wasi-http" ];
+assert lib.all (name: cargo.dependencies.${name}.version == cargo.dependencies.wasmtime.version)
+  [ "wasmtime-wasi" "wasmtime-wasi-http" ];
 rustPlatform.buildRustPackage {
   pname = "kettlecorn-launcher";
   version = cargo.package.version;

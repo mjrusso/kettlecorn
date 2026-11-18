@@ -18,7 +18,7 @@
 , wasm-component-ld
 , wit-bindgen
 , wasm-tools
-, wasmtime
+, wasmtimeSrc
 , cmake
 , ninja
 , python3
@@ -145,7 +145,7 @@ let
       # wasmtime that runs the guest.
       mkdir -p wit
       cp http/world.wit wit/
-      ln -s ${wasmtime.src}/crates/wasi-http/src/p3/wit/deps wit/deps
+      ln -s ${wasmtimeSrc}/crates/wasi-http/src/p3/wit/deps wit/deps
       wit-bindgen c wit --out-dir http/gen
 
       cc() { clang ${flags} -O2 -D_GNU_SOURCE -Iinclude -include include/wasi_compat.h "$@"; }

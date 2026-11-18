@@ -1,4 +1,4 @@
-{ writeText, erlang, otp, elixirVersion, popcorn, wasi-libc, wasmtime, rustc, llvm, openssl, nixpkgs }:
+{ writeText, erlang, otp, elixirVersion, popcorn, wasi-libc, wasmtimeVersion, rustc, llvm, openssl, nixpkgs }:
 let
   date = input:
     let d = input.lastModifiedDate; in
@@ -17,7 +17,7 @@ writeText "versions.md" ''
   | Elixir | ${elixirVersion} | flake input `elixir` |
   | Popcorn | ${pinned popcorn} | flake input `popcorn` (main) |
   | wasi-libc | ${pinned wasi-libc} | flake input `wasi-libc` |
-  | wasmtime | ${wasmtime.version} | nixpkgs |
+  | wasmtime | ${wasmtimeVersion} | `launcher/Cargo.toml` |
   | Rust (launcher) | ${rustc.version} | nixpkgs |
   | LLVM (clang, lld, compiler-rt) | ${llvm.release_version} | nixpkgs |
   | OpenSSL | ${openssl.version} | nixpkgs |

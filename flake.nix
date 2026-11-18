@@ -64,14 +64,20 @@
         });
         inherit (beamPackages) erlang;
         elixirPkg = beamPackages.elixir;
-        wasmtime = pkgs.wasmtime;
-        launcherPackages = if pkgs.stdenv.isLinux then pkgs.pkgsStatic else pkgs;
-        launcher = launcherPackages.callPackage ./nix/launcher.nix {
-          wasmtimeVersion = wasmtime.version;
+        launcherCargo = builtins.fromTOML (builtins.readFile ./launcher/Cargo.toml);
+        wasmtimeVersion = lib.removePrefix "=" launcherCargo.dependencies.wasmtime.version;
+        wasmtimeSrc = pkgs.fetchFromGitHub {
+          name = "wasmtime-${wasmtimeVersion}-source";
+          owner = "bytecodealliance";
+          repo = "wasmtime";
+          tag = "v${wasmtimeVersion}";
+          hash = "sha256-YV+VFvnkI3ifLbCvciEedDzXqdVnwSTDqrtHcsuvgBs=";
         };
+        launcherPackages = if pkgs.stdenv.isLinux then pkgs.pkgsStatic else pkgs;
+        launcher = launcherPackages.callPackage ./nix/launcher.nix { };
 
         toolchain = pkgs.callPackage ./nix/toolchain.nix {
-          inherit wasmtime;
+          inherit wasmtimeSrc;
           wasi-libc-src = wasi-libc;
         };
         openssl = pkgs.callPackage ./nix/openssl.nix { inherit toolchain; };
@@ -91,7 +97,7 @@
             otp = otpWasi.version;
             elixir = elixirVersion;
             # Hosts need the manifest's imports, component-model async and threading.
-            tested_with.wasmtime = wasmtime.version;
+            tested_with.wasmtime = wasmtimeVersion;
             platform = system;
           };
           inherit guestDeps launcher;
@@ -106,7 +112,7 @@
               (file: "${wasi-libc}/${file}");
             compiler-rt."LICENSE.TXT" = "${toolchain.llvm.compiler-rt.src}/compiler-rt/LICENSE.TXT";
             # The WIT files the wasi:http bindings are generated from.
-            wasi-http.LICENSE = "${wasmtime.src}/LICENSE";
+            wasi-http.LICENSE = "${wasmtimeSrc}/LICENSE";
             openssl."LICENSE.txt" = pkgs.runCommand "openssl-license" { } ''
               tar -xzf ${openssl.src} --strip-components=1 --wildcards '*/LICENSE.txt'
               cp LICENSE.txt $out
@@ -131,7 +137,7 @@
 
         versionsDoc = ./host/guides/development.md;
         versions = pkgs.callPackage ./nix/versions.nix {
-          inherit erlang elixirVersion popcorn wasi-libc wasmtime openssl nixpkgs;
+          inherit erlang elixirVersion popcorn wasi-libc wasmtimeVersion openssl nixpkgs;
           rustc = pkgs.rustc;
           otp = otpWasi;
           llvm = toolchain.llvm;
@@ -144,7 +150,6 @@
           nixpkgs-fmt
           erlang
           elixirPkg
-          wasmtime
           python3
           rustc
           cargo
