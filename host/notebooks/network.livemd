@@ -106,9 +106,12 @@ Expected results:
 
 | Grant | TCP | `Kettlecorn.HTTP` | Req |
 |---|---|---|---|
-| None | `:eacces` | `:unsupported` | `:eacces` |
+| None | `:eacces` | `:unsupported` | `:network_disabled` |
 | `network: true` | Allowed | `:unsupported` | HTTP 200 |
 | `http: true` | `:eacces` | HTTP 200 | HTTP 200 |
+
+The host decodes `:network_disabled` as `{:unknown_atom, "network_disabled"}`
+because that atom is not loaded on the host; decoding guest output never creates atoms.
 
 ```elixir
 ok_response = {200, "hello from the host"}
@@ -118,7 +121,7 @@ expected = [
    %{
      "tcp" => {:error, :eacces},
      "Kettlecorn.HTTP" => {:error, :unsupported},
-     "Req" => {:error, :eacces}
+     "Req" => {:error, {:unknown_atom, "network_disabled"}}
    }},
   {[network: true],
    %{"tcp" => :ok, "Kettlecorn.HTTP" => {:error, :unsupported}, "Req" => ok_response}},
@@ -137,8 +140,6 @@ for {grant, expected_result} <- expected do
   {grant, result}
 end
 ```
-
-With `network: true`, Req uses Finch and Mint over guest sockets.
 
 ```elixir
 :gen_tcp.close(listener)

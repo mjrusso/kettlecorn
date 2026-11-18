@@ -291,11 +291,20 @@ Req ships in the guest. Its default adapter depends on the grants:
 
 | VM started with | `Req.get!/2` goes through |
 |---|---|
-| `http: true` | `Kettlecorn.HTTP.ReqAdapter` over `wasi:http` (the guest app installs it as Req's default adapter) |
-| `network: true` | Req's usual Finch/Mint, over `wasi:sockets` |
-| neither | `%Req.TransportError{reason: :eacces}` |
+| `http: true`, with or without `network: true` | `Kettlecorn.HTTP.ReqAdapter` over `wasi:http` |
+| `network: true` only | Req's usual Finch/Mint, over `wasi:sockets` |
+| neither | A rejecting adapter that returns `Kettlecorn.NetworkDisabledError` |
 
 Use `http: true` for HTTP access without granting raw sockets.
+Explicit adapters in Req's default options or individual requests override
+this selection.
+
+Req remains available without grants for request construction and offline
+adapters. Its default adapter rejects HTTP and HTTPS before DNS, sockets, or
+TLS setup. `Req.get/2` returns `{:error, exception}` with
+`reason: :network_disabled`; `Req.get!/2` raises the same exception. Req's
+default retry policy does not retry it. The message explains how to enable
+access with `--http` / `http: true` or `--network` / `network: true`.
 
 With `http: true`, Wasmtime verifies HTTPS servers with Mozilla's root CA
 list compiled into its `webpki-roots` dependency. The `:cacerts` option does
@@ -321,8 +330,8 @@ bundle from a standard location, unless `--cacertfile FILE` names
 another. In the guest, `:public_key.cacerts_get/0` returns them, and
 Req and Mint use them unless a request passes its own.
 
-With `cacerts: []`, or on a host without a trust store, the guest has no
-CA certificates. `:public_key.cacerts_get/0` raises, and so does a Req HTTPS
+With `network: true`, the guest has no CA certificates if `cacerts: []` or
+the host has no trust store. `:public_key.cacerts_get/0` raises, and so does a Req HTTPS
 request that doesn't pass `connect_options: [transport_opts: [cacerts: ...]]`.
 
 See [network grants](sandbox.md#network-grants) for destination access.

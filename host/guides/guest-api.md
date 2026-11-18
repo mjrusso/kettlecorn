@@ -133,10 +133,8 @@ Req ships in the runtime. With `http: true`, the guest installs
 Req.get!("https://example.com/").body
 ```
 
-With only `network: true`, Req uses Finch and Mint over guest sockets.
-With both grants, the HTTP adapter takes precedence. Without either grant,
-requests fail. [HTTP and Req](running-applications.md#http-and-req) describes
-the certificates and grant behavior.
+See [HTTP and Req](running-applications.md#http-and-req) for grant selection,
+permission errors, certificates, and adapter overrides.
 
 Req's `:receive_timeout` and `connect_options: [timeout: value]` follow the
 timeout rules above. With `:infinity`, `Req.get/2` returns

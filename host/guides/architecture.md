@@ -292,6 +292,15 @@ it stays alive until the capture processes exit; the first exit bounds the wait
 for the other. Tracing can be disabled or suspended by guest code, so descendant
 cleanup is best effort and VM limits remain necessary.
 
+## Req adapter selection
+
+The Rust launcher passes `-kettlecorn_network` when the network grant is
+enabled. `Kettlecorn.Boot.network_granted?/0` reads this runtime setting;
+`Kettlecorn.HTTP.available?/0` reports whether the HTTP component is linked.
+`Kettlecorn.GuestApplication` selects and installs
+[Req's default adapter](running-applications.md#http-and-req) during startup.
+The flag is informational; Wasmtime enforces socket and DNS permissions.
+
 ## CA certificates
 
 OTP finds a system's CA certificates by its OS type, and has no location
