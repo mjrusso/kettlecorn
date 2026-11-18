@@ -334,6 +334,9 @@ editing, history, tab completion, and colours in a terminal. With piped
 input, it reads lines and exits at the end of input. Use `--app DIR --iex`
 to start a cooked application before entering the shell.
 
+`mix kettlecorn.run --iex` prints the standalone command to run, preserving
+any supplied `--http` and `--network` flags.
+
 The [architecture guide](architecture.md#interactive-iex) describes terminal
 handling in the guest and launcher.
 
