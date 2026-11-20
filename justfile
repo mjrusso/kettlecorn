@@ -142,13 +142,17 @@ format:
     cd host && mix format && mix format {{extra_elixir}}
 
 # Benchmark startup and workloads (BENCH_TIME sets seconds per scenario).
-bench: bench-startup bench-workloads
+bench: bench-startup bench-workloads bench-rust
 
 bench-startup:
     {{runtime}} && cd host && MIX_ENV=bench mix run bench/startup.exs
 
 bench-workloads:
     {{runtime}} && cd host && MIX_ENV=bench mix run bench/workloads.exs
+
+# Benchmark the Rust embedding API in an optimized build.
+bench-rust:
+    {{runtime}} && cargo bench --locked --no-default-features --manifest-path rust/Cargo.toml --bench embedding
 
 # The host library's documentation (ExDoc), into host/doc.
 docs:

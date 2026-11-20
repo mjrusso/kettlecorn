@@ -13,9 +13,12 @@ From the repository root, inside `nix develop`:
 ```sh
 just bench-startup
 just bench-workloads
+just bench-rust
 ```
 
-`just bench` runs both suites. `BENCH_TIME` sets seconds per scenario:
+`just bench` runs all three suites. `BENCH_TIME` sets seconds per scenario for
+the Elixir benchmarks. `BENCH_SAMPLES` sets how many calls the Rust benchmark
+measures per operation per round.
 
 ```sh
 BENCH_TIME=30 just bench
@@ -39,6 +42,23 @@ the BEAM interpreter in WebAssembly; native programs use the host JIT.
 Source evaluation uses `erl_eval` on both sides. Guest timings include the
 host/guest round trip.
 
-For Rust embedding, measure `Runtime::prepare` separately from repeated
-`PreparedRuntime::run` calls. Preparation compiles or loads the component;
-each execution reuses it and creates a fresh store.
+### Rust embedding
+
+```sh
+just bench-rust
+BENCH_SAMPLES=100 just bench-rust
+```
+
+The Rust suite runs an optimized build with the default VM settings. Each
+startup scenario uses a fresh process and a temporary compilation cache. The
+first process compiles the component, and a second starts with that disk
+cache populated. The suite also measures another VM on the same `Runtime`
+and times `Runtime::warm_up` separately from `Runtime::start`.
+
+For dispatch, `Vm::call` and `Vm::eval` alternate on one running VM and
+send the same GenServer request. The suite reports minimum, median, and
+95th-percentile latency for each of three rounds. `BENCH_SAMPLES` sets the sample
+count per operation per round and defaults to 2,000.
+The suite also reports mean guest-to-host round-trip time per call. It times
+one `Vm::eval` that makes 10,000 calls to a Rust callback and divides the
+elapsed time by 10,000.

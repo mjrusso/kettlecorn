@@ -15,6 +15,10 @@ name = "kettlecorn-launch"
 path = "src/bin/kettlecorn-launch.rs"
 required-features = ["cli"]
 
+[[bench]]
+name = "embedding"
+harness = false
+
 [features]
 default = ["http"]
 cli = ["dep:clap", "dep:humantime", "dep:mimalloc", "tokio/signal"]
