@@ -1,0 +1,864 @@
+use crate::engine::expiration;
+use crate::protocol::{self, Event};
+use crate::{Error, Value};
+use anyhow::{Context, Result, anyhow, bail};
+use futures_util::{FutureExt, StreamExt, pin_mut, stream};
+use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, WriteHalf};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot};
+use tokio::task::JoinSet;
+use tokio::time::{Instant, timeout, timeout_at};
+
+use super::HostFunction;
+
+const REQUEST_BYTES: usize = 2 * (protocol::MAX_FRAME_BYTES + 4);
+const REJECTIONS: usize = 8;
+const EVENT_HISTORY: usize = 16;
+const MAX_DRAIN_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SERVE_BATCH: usize = 16;
+
+type Reply = oneshot::Sender<Result<Value, Error>>;
+
+pub(super) struct Client {
+    submit: mpsc::UnboundedSender<Request>,
+    bytes: Arc<Semaphore>,
+    active: Arc<Semaphore>,
+    last_id: AtomicU32,
+    events: broadcast::WeakSender<Value>,
+}
+
+pub(super) struct Inbox {
+    requests: mpsc::UnboundedReceiver<Request>,
+    events: broadcast::Sender<Value>,
+}
+
+struct Request {
+    id: u32,
+    frame: Frame,
+    pending: Pending,
+}
+
+struct Frame {
+    bytes: Vec<u8>,
+    _permit: OwnedSemaphorePermit,
+}
+
+enum Outgoing {
+    Request(Request),
+    HostReply(Frame),
+}
+
+struct Writing {
+    outgoing: Outgoing,
+    deadline: Instant,
+    offset: usize,
+}
+
+impl Writing {
+    fn remaining(&self) -> &[u8] {
+        let frame = match &self.outgoing {
+            Outgoing::Request(request) => &request.frame,
+            Outgoing::HostReply(frame) => frame,
+        };
+        &frame.bytes[self.offset..]
+    }
+}
+
+struct Pending {
+    reply: Reply,
+    deadline: Instant,
+    guest_budget: Duration,
+    cast: bool,
+    _active: OwnedSemaphorePermit,
+}
+
+impl Client {
+    pub(super) fn new(capacity: usize, events: Option<broadcast::Sender<Value>>) -> (Self, Inbox) {
+        let (submit, requests) = mpsc::unbounded_channel();
+        let events = events.unwrap_or_else(|| broadcast::channel(EVENT_HISTORY).0);
+        (
+            Self {
+                submit,
+                bytes: Arc::new(Semaphore::new(REQUEST_BYTES)),
+                active: Arc::new(Semaphore::new(capacity)),
+                last_id: AtomicU32::new(0),
+                events: events.downgrade(),
+            },
+            Inbox { requests, events },
+        )
+    }
+
+    pub(super) fn subscribe(&self) -> broadcast::Receiver<Value> {
+        self.events
+            .upgrade()
+            .map(|events| events.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1)
+    }
+
+    pub(super) async fn request(
+        &self,
+        deadline: Instant,
+        guest_budget: Duration,
+        cast: bool,
+        encode: impl FnOnce(u32) -> Result<Vec<u8>>,
+    ) -> Result<Value, Error> {
+        if self.submit.is_closed() {
+            return Err(Error::Stopped);
+        }
+        let (reply, response) = oneshot::channel();
+        timeout_at(deadline, async {
+            let active = self
+                .active
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Stopped)?;
+            // Reserve enough for encoding before allocating a packet, then return the unused bytes.
+            let mut capacity = self
+                .bytes
+                .clone()
+                .acquire_many_owned((protocol::MAX_FRAME_BYTES + 4) as u32)
+                .await
+                .map_err(|_| Error::Stopped)?;
+            let id = self.next_id()?;
+            let bytes = encode(id).map_err(Error::InvalidRequest)?;
+            let used = capacity
+                .split(bytes.len())
+                .expect("frame encoder enforces byte limit");
+            drop(capacity);
+            self.submit
+                .send(Request {
+                    id,
+                    frame: Frame {
+                        bytes,
+                        _permit: used,
+                    },
+                    pending: Pending {
+                        reply,
+                        deadline,
+                        guest_budget,
+                        cast,
+                        _active: active,
+                    },
+                })
+                .map_err(|_| Error::Stopped)
+        })
+        .await
+        .map_err(|_| Error::Backpressure)??;
+
+        timeout_at(deadline, response)
+            .await
+            .map_err(|_| Error::Deadline)?
+            .map_err(|_| Error::Stopped)?
+    }
+
+    fn next_id(&self) -> Result<u32, Error> {
+        self.last_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                last.checked_add(1)
+            })
+            .map(|last| last + 1)
+            .map_err(|_| Error::RequestIdsExhausted)
+    }
+
+    pub(super) fn close(&self) {
+        self.active.close();
+        self.bytes.close();
+    }
+}
+
+pub(super) struct Callbacks {
+    pub functions: HashMap<String, HostFunction>,
+    pub deadline: Duration,
+    pub capacity: usize,
+}
+
+#[derive(Default)]
+pub(super) struct Output {
+    pub stdout: Option<mpsc::Sender<Vec<u8>>>,
+    pub stderr: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+impl Output {
+    fn diagnostic(&self, message: fmt::Arguments<'_>) {
+        if let Some(stderr) = &self.stderr
+            && let Ok(slot) = stderr.try_reserve()
+        {
+            slot.send(format!("kettlecorn: {message}\n").into_bytes());
+        }
+    }
+}
+
+pub(super) async fn run(
+    peer: DuplexStream,
+    mut inbox: Inbox,
+    ready: oneshot::Sender<()>,
+    callbacks: Callbacks,
+    write_timeout: Duration,
+    output: Output,
+) -> Result<()> {
+    let (reader, mut writer) = tokio::io::split(peer);
+    // The stream must keep a partial frame when another select branch wins.
+    let frames = stream::unfold(BufReader::new(reader), |mut reader| async move {
+        let frame = read_frame(&mut reader).await;
+        Some((frame, reader))
+    });
+    pin_mut!(frames);
+    let mut ready = Some(ready);
+    let mut normal = VecDeque::new();
+    let mut priority = VecDeque::new();
+    let mut current: Option<Writing> = None;
+    let mut pending: HashMap<u32, Pending> = HashMap::new();
+    let mut calls = JoinSet::<(Vec<u8>, super::HostResult, OwnedSemaphorePermit)>::new();
+    let host_slots = Arc::new(Semaphore::new(callbacks.capacity));
+    let rejection_slots = Arc::new(Semaphore::new(REJECTIONS));
+    let mut reported_decode_error = false;
+    let mut reported_oversize = false;
+    let mut reported_overload = false;
+    let mut served = 0;
+
+    loop {
+        if served == MAX_SERVE_BATCH {
+            tokio::task::yield_now().await;
+            served = 0;
+        }
+        served += 1;
+
+        if current.is_none() {
+            current = next_write(&mut normal, &mut priority, write_timeout)?;
+        }
+        let write_deadline = current.as_ref().map(|frame| frame.deadline);
+        if write_deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+            let frame = current.take().unwrap();
+            // Subsequent bytes would be interpreted as part of the incomplete frame.
+            anyhow::ensure!(
+                frame.offset == 0,
+                "write deadline exceeded after a partial guest frame"
+            );
+            match frame.outgoing {
+                Outgoing::Request(request) => {
+                    let _ = request.pending.reply.send(Err(Error::Deadline));
+                    continue;
+                }
+                Outgoing::HostReply(_) => {
+                    bail!("guest stopped reading before accepting a host reply")
+                }
+            }
+        }
+
+        // Try a newly queued reply before yielding to the guest. When the pipe is
+        // backpressured, the select still services reads and independent deadlines.
+        let written = write_chunk(&mut writer, current.as_mut()).now_or_never();
+        let written = if written.is_some() {
+            written
+        } else {
+            let deadline = pending.values().map(|request| request.deadline).min();
+            tokio::select! {
+                count = write_chunk(&mut writer, current.as_mut()) => Some(count),
+                _ = expiration(write_deadline) => None,
+                _ = expiration(deadline) => {
+                    let now = Instant::now();
+                    for (_, request) in pending.extract_if(|_, request| request.deadline <= now) {
+                        let _ = request.reply.send(Err(Error::Deadline));
+                    }
+                    None
+                }
+                request = inbox.requests.recv() => {
+                    let Some(request) = request else { return Ok(()); };
+                    if !request.pending.reply.is_closed() {
+                        normal.push_back(request);
+                    }
+                    None
+                }
+                Some(completed) = calls.join_next() => {
+                    let (token, result, slot) = completed.context("join host callback")?;
+                    send_host_reply(&mut priority, &token, result, slot)?;
+                    None
+                }
+                Some(frame) = frames.next() => {
+                    let frame = frame.context("read guest frame")?;
+                    let Some(frame) = frame else {
+                        if !reported_oversize {
+                            output.diagnostic(format_args!("discarded oversized guest frame"));
+                            reported_oversize = true;
+                        }
+                        continue;
+                    };
+                    match protocol::event(&frame)? {
+                        Some(Event::Ready(version)) => {
+                            anyhow::ensure!(
+                                version == Some(protocol::EMBEDDED_API),
+                                "runtime guest does not support embedded API version {} (advertised {version:?})",
+                                protocol::EMBEDDED_API
+                            );
+                            if let Some(ready) = ready.take() {
+                                let _ = ready.send(());
+                            }
+                        }
+                        Some(Event::BootFailed) => bail!("guest applications failed to boot"),
+                        Some(Event::Undecodable(error)) if !reported_decode_error => {
+                            output.diagnostic(format_args!("could not decode guest message: {error}"));
+                            reported_decode_error = true;
+                        }
+                        Some(Event::GuestMessage(value)) => {
+                            let _ = inbox.events.send(value);
+                        }
+                        Some(Event::Output { stderr, bytes }) => {
+                            let sender = if stderr { &output.stderr } else { &output.stdout };
+                            if let Some(sender) = sender
+                                && let Ok(slot) = sender.try_reserve()
+                            {
+                                slot.send(bytes.to_vec());
+                            }
+                        }
+                        Some(Event::SendResult { id, status }) => {
+                            if status != 0 {
+                                finish(&mut pending, id, Err(Error::Protocol(anyhow!("guest rejected send (status {status})"))));
+                            } else if pending.get(&id).is_some_and(|request| request.cast) {
+                                finish(&mut pending, id, Ok(Value::atom("ok")));
+                            }
+                        }
+                        Some(Event::Reply { id, result }) => {
+                            finish(&mut pending, id, result.map_err(Error::Protocol));
+                        }
+                        Some(Event::HostCall { name, args, token }) => {
+                            if let Ok(slot) = host_slots.clone().try_acquire_owned() {
+                                let Some(function) = callbacks.functions.get(&name).cloned() else {
+                                    send_host_reply(&mut priority, &token, Err("unknown host function".into()), slot)?;
+                                    continue;
+                                };
+                                let started = Instant::now();
+                                let mut call = Box::pin(
+                                    AssertUnwindSafe(async move { function(args).await })
+                                        .catch_unwind()
+                                        .map(|result| result.unwrap_or_else(|_| Err("host function panicked".into())))
+                                );
+                                if let Some(result) = call.as_mut().now_or_never() {
+                                    send_host_reply(&mut priority, &token, result, slot)?;
+                                } else {
+                                    let waiting = timeout(callbacks.deadline.saturating_sub(started.elapsed()), call);
+                                    calls.spawn(async move {
+                                        let result = waiting.await
+                                            .unwrap_or_else(|_| Err("host function deadline exceeded".into()));
+                                        (token, result, slot)
+                                    });
+                                }
+                            } else {
+                                reject_host_call(&mut priority, &rejection_slots, &token, "host call capacity exhausted", &output, &mut reported_overload)?;
+                            }
+                        }
+                        Some(Event::RejectedHostCall(token)) => {
+                            reject_host_call(&mut priority, &rejection_slots, &token, "invalid or oversized host call arguments", &output, &mut reported_overload)?;
+                        }
+                        _ => {}
+                    }
+                    None
+                }
+            }
+        };
+
+        if let Some(written) = written {
+            let frame = current.as_mut().unwrap();
+            let count = written?;
+            if count == 0 {
+                current = None;
+                continue;
+            }
+            frame.offset += count;
+            if frame.remaining().is_empty() {
+                let frame = current.take().unwrap();
+                if let Outgoing::Request(Request {
+                    id,
+                    pending: mut request,
+                    ..
+                }) = frame.outgoing
+                {
+                    request.deadline = request.deadline.max(Instant::now() + request.guest_budget);
+                    pending.insert(id, request);
+                }
+            }
+        }
+    }
+}
+
+fn next_write(
+    normal: &mut VecDeque<Request>,
+    priority: &mut VecDeque<Frame>,
+    write_timeout: Duration,
+) -> Result<Option<Writing>> {
+    let now = Instant::now();
+    let limit = now
+        .checked_add(write_timeout)
+        .context("frame write deadline exceeds the clock range")?;
+    if let Some(frame) = priority.pop_front() {
+        return Ok(Some(Writing {
+            outgoing: Outgoing::HostReply(frame),
+            deadline: limit,
+            offset: 0,
+        }));
+    }
+    while let Some(request) = normal.pop_front() {
+        if request.pending.reply.is_closed() {
+            continue;
+        }
+        if request.pending.deadline <= now {
+            let _ = request.pending.reply.send(Err(Error::Deadline));
+            continue;
+        }
+        return Ok(Some(Writing {
+            deadline: limit.min(request.pending.deadline),
+            outgoing: Outgoing::Request(request),
+            offset: 0,
+        }));
+    }
+    Ok(None)
+}
+
+async fn write_chunk(
+    writer: &mut WriteHalf<DuplexStream>,
+    frame: Option<&mut Writing>,
+) -> Result<usize> {
+    let Some(frame) = frame else {
+        return std::future::pending().await;
+    };
+    let count = if let Outgoing::Request(request) = &mut frame.outgoing
+        && frame.offset == 0
+    {
+        tokio::select! {
+            biased;
+            _ = request.pending.reply.closed() => return Ok(0),
+            count = writer.write(&request.frame.bytes) => count,
+        }
+    } else {
+        writer.write(frame.remaining()).await
+    }
+    .context("write guest frame")?;
+    anyhow::ensure!(count != 0, "guest writer closed");
+    Ok(count)
+}
+
+async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Option<Vec<u8>>> {
+    let len = reader.read_u32().await.context("read guest frame length")? as usize;
+    if len <= protocol::MAX_FRAME_BYTES {
+        let mut frame = vec![0; len];
+        reader
+            .read_exact(&mut frame)
+            .await
+            .context("read guest frame body")?;
+        return Ok(Some(frame));
+    }
+    anyhow::ensure!(
+        len <= MAX_DRAIN_BYTES,
+        "guest frame exceeds drain limit: {len} bytes"
+    );
+    let drained = io::copy(&mut reader.take(len as u64), &mut io::sink()).await?;
+    anyhow::ensure!(drained == len as u64, "truncated oversized guest frame");
+    Ok(None)
+}
+
+fn finish(pending: &mut HashMap<u32, Pending>, id: u32, result: Result<Value, Error>) {
+    if let Some(request) = pending.remove(&id) {
+        let _ = request.reply.send(result);
+    }
+}
+
+fn send_host_reply(
+    priority: &mut VecDeque<Frame>,
+    token: &[u8],
+    result: Result<Value, String>,
+    slot: OwnedSemaphorePermit,
+) -> Result<()> {
+    let bytes = protocol::reply(token, result).or_else(|_| {
+        protocol::reply(
+            token,
+            Err("host function result exceeds protocol limits".into()),
+        )
+    })?;
+    priority.push_back(Frame {
+        bytes,
+        _permit: slot,
+    });
+    Ok(())
+}
+
+fn reject_host_call(
+    priority: &mut VecDeque<Frame>,
+    slots: &Arc<Semaphore>,
+    token: &[u8],
+    reason: &str,
+    output: &Output,
+    reported_overload: &mut bool,
+) -> Result<()> {
+    if let Ok(slot) = slots.clone().try_acquire_owned() {
+        send_host_reply(priority, token, Err(reason.into()), slot)?;
+    } else if !*reported_overload {
+        output.diagnostic(format_args!("guest host-call rejection queue full"));
+        *reported_overload = true;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn cancellation_discards_a_selected_frame_before_its_first_byte() {
+        let (mut guest, mut peer) = tokio::io::duplex(64);
+        peer.write_all(&[9; 64]).await.unwrap();
+        let (client, inbox) = Client::new(16, None);
+        let (ready, _boot) = oneshot::channel();
+        let session = run(
+            peer,
+            inbox,
+            ready,
+            Callbacks {
+                functions: HashMap::new(),
+                deadline: Duration::from_secs(1),
+                capacity: 4,
+            },
+            Duration::from_secs(5),
+            Output::default(),
+        );
+        pin_mut!(session);
+        let request = client.request(
+            Instant::now() + Duration::from_secs(5),
+            Duration::ZERO,
+            true,
+            |_| Ok(vec![7; 4]),
+        );
+        let mut request = Box::pin(request);
+        assert!(request.as_mut().now_or_never().is_none());
+        assert!(session.as_mut().now_or_never().is_none());
+        drop(request);
+        assert!(session.as_mut().now_or_never().is_none());
+        let mut filler = [0; 64];
+        guest.read_exact(&mut filler).await.unwrap();
+        assert_eq!(filler, [9; 64]);
+        assert!(session.as_mut().now_or_never().is_none());
+        let mut unwanted = [0; 4];
+        assert!(guest.read(&mut unwanted).now_or_never().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_boot_reply_without_the_embedded_api_does_not_open_a_session() {
+        let (mut guest, peer) = tokio::io::duplex(128);
+        let (_client, inbox) = Client::new(16, None);
+        let (ready, boot) = oneshot::channel();
+        guest
+            .write_all(&protocol::message_frame(vec![
+                (Value::atom("type"), Value::atom("kettlecorn")),
+                (Value::atom("event"), Value::atom("boot_ready")),
+            ]))
+            .await
+            .unwrap();
+        let result = run(
+            peer,
+            inbox,
+            ready,
+            Callbacks {
+                functions: HashMap::new(),
+                deadline: Duration::from_secs(1),
+                capacity: 4,
+            },
+            Duration::from_secs(5),
+            Output::default(),
+        )
+        .now_or_never()
+        .expect("the old boot reply must fail immediately");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("embedded API version")
+        );
+        assert!(boot.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn writer_runs_before_reader_drains_a_backlog() {
+        const BACKLOG: usize = 64;
+        let frame = protocol::host_call_frame("ping", 0);
+        let (mut guest, peer) = tokio::io::duplex(frame.len() * BACKLOG);
+        guest.write_all(&frame.repeat(BACKLOG)).await.unwrap();
+
+        let (_client, inbox) = Client::new(16, None);
+        let (ready, _boot) = oneshot::channel();
+        let served = Arc::new(AtomicUsize::new(0));
+        let calls = served.clone();
+        let callback: HostFunction = Arc::new(move |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(Value::atom("ok")) })
+        });
+        let session = run(
+            peer,
+            inbox,
+            ready,
+            Callbacks {
+                functions: HashMap::from([("ping".into(), callback)]),
+                deadline: Duration::from_secs(1),
+                capacity: BACKLOG,
+            },
+            Duration::from_secs(5),
+            Output::default(),
+        );
+        pin_mut!(session);
+        assert!(session.as_mut().now_or_never().is_none());
+
+        let count = served.load(Ordering::Relaxed);
+        assert!(
+            count < BACKLOG,
+            "reader drained the backlog before yielding"
+        );
+        let reply = read_frame(&mut guest)
+            .now_or_never()
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let expected = protocol::reply(&[0], Ok(Value::atom("ok"))).unwrap();
+        assert_eq!(reply, expected[4..]);
+    }
+
+    #[test]
+    fn request_ids_stop_at_exhaustion() {
+        let (client, _inbox) = Client::new(3, None);
+        assert_eq!(client.next_id().unwrap(), 1);
+        client.last_id.store(u32::MAX - 1, Ordering::Relaxed);
+        assert_eq!(client.next_id().unwrap(), u32::MAX);
+        assert!(matches!(client.next_id(), Err(Error::RequestIdsExhausted)));
+        assert!(matches!(client.next_id(), Err(Error::RequestIdsExhausted)));
+    }
+
+    #[tokio::test]
+    async fn rejects_truncated_frames_and_lengths_above_the_drain_limit() {
+        let oversized = ((protocol::MAX_FRAME_BYTES + 1) as u32).to_be_bytes();
+        let above_drain = ((MAX_DRAIN_BYTES + 1) as u32).to_be_bytes();
+        let truncated = read_frame(&mut oversized.as_slice()).await.unwrap_err();
+        let above_drain = read_frame(&mut above_drain.as_slice()).await.unwrap_err();
+        assert_eq!(truncated.to_string(), "truncated oversized guest frame");
+        assert!(above_drain.to_string().contains("exceeds drain limit"));
+    }
+
+    async fn acknowledge(guest: &mut DuplexStream, id: [u8; 4]) {
+        let frame = [0, 0, 0, 6, 5, id[0], id[1], id[2], id[3], 0];
+        guest.write_all(&frame).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_replies_stay_bounded_while_the_guest_stops_reading() {
+        timeout(Duration::from_secs(10), async {
+            let host_capacity = 6;
+            let (mut guest, peer) = tokio::io::duplex(64);
+            let (client, inbox) = Client::new(16, None);
+            let client = Arc::new(client);
+            let (ready, _boot) = oneshot::channel();
+            let callback: HostFunction =
+                Arc::new(|_| Box::pin(async { Ok(Value::Binary(vec![0; 4096])) }));
+            let (stderr, mut diagnostics) = mpsc::channel(1);
+            let session = tokio::spawn(run(
+                peer,
+                inbox,
+                ready,
+                Callbacks {
+                    functions: HashMap::from([("large".into(), callback)]),
+                    deadline: Duration::from_secs(1),
+                    capacity: host_capacity,
+                },
+                Duration::from_secs(5),
+                Output {
+                    stderr: Some(stderr),
+                    ..Output::default()
+                },
+            ));
+
+            let pending = tokio::spawn({
+                let client = client.clone();
+                async move {
+                    client
+                        .request(
+                            Instant::now() + Duration::from_secs(8),
+                            Duration::ZERO,
+                            true,
+                            |id| Ok(id.to_be_bytes().to_vec()),
+                        )
+                        .await
+                }
+            });
+            let mut pending_id = [0; 4];
+            guest.read_exact(&mut pending_id).await.unwrap();
+            guest
+                .write_all(&protocol::host_call_frame("large", 0))
+                .await
+                .unwrap();
+            let first_frame_len = guest.read_u32().await.unwrap() as usize;
+            assert!(first_frame_len > 64);
+
+            let reply_count = (host_capacity + REJECTIONS) as u8;
+            for token in 1..=reply_count {
+                guest
+                    .write_all(&protocol::host_call_frame("large", token))
+                    .await
+                    .unwrap();
+            }
+            acknowledge(&mut guest, pending_id).await;
+            assert_eq!(pending.await.unwrap().unwrap(), Value::atom("ok"));
+            let expired = client
+                .request(
+                    Instant::now() + Duration::from_millis(50),
+                    Duration::ZERO,
+                    true,
+                    |id| Ok(id.to_be_bytes().to_vec()),
+                )
+                .await;
+            assert!(matches!(expired, Err(Error::Deadline)));
+
+            let (submitted, queued) = oneshot::channel();
+            let next = tokio::spawn({
+                let client = client.clone();
+                async move {
+                    client
+                        .request(
+                            Instant::now() + Duration::from_secs(8),
+                            Duration::ZERO,
+                            true,
+                            |id| {
+                                submitted.send(()).unwrap();
+                                Ok(id.to_be_bytes().to_vec())
+                            },
+                        )
+                        .await
+                }
+            });
+            queued.await.unwrap();
+
+            let mut seen = vec![false; usize::from(reply_count)];
+            let mut body = vec![0; first_frame_len];
+            guest.read_exact(&mut body).await.unwrap();
+            for index in 0..reply_count {
+                if index > 0 {
+                    body = read_frame(&mut guest).await.unwrap().unwrap();
+                }
+                let token = body[10];
+                assert!(!std::mem::replace(&mut seen[usize::from(token)], true));
+                let expected = if usize::from(token) < host_capacity {
+                    Ok(Value::Binary(vec![0; 4096]))
+                } else {
+                    Err("host call capacity exhausted".into())
+                };
+                let frame = protocol::reply(&[token], expected).unwrap();
+                assert_eq!(body, frame[4..]);
+            }
+
+            let mut next_id = [0; 4];
+            guest.read_exact(&mut next_id).await.unwrap();
+            acknowledge(&mut guest, next_id).await;
+            assert_eq!(next.await.unwrap().unwrap(), Value::atom("ok"));
+            assert_eq!(
+                diagnostics.try_recv().unwrap(),
+                b"kettlecorn: guest host-call rejection queue full\n"
+            );
+            drop(client);
+            session.await.unwrap().unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_full_writer_keeps_reply_dispatch_and_deadlines_running() {
+        let (mut guest, peer) = tokio::io::duplex(4 * 1024);
+        let (client, inbox) = Client::new(16, None);
+        let client = Arc::new(client);
+        let (ready, _boot) = oneshot::channel();
+        let session = tokio::spawn(run(
+            peer,
+            inbox,
+            ready,
+            Callbacks {
+                functions: HashMap::new(),
+                deadline: Duration::from_secs(1),
+                capacity: 4,
+            },
+            Duration::from_millis(500),
+            Output::default(),
+        ));
+        let initial = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .request(
+                        Instant::now() + Duration::from_secs(6),
+                        Duration::from_secs(1),
+                        true,
+                        |id| Ok(id.to_be_bytes().to_vec()),
+                    )
+                    .await
+            }
+        });
+        let mut first_id = [0; 4];
+        guest.read_exact(&mut first_id).await.unwrap();
+
+        let (reserved, both) = oneshot::channel();
+        let max_frame = protocol::MAX_FRAME_BYTES + 4;
+        let blocked = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .request(
+                        Instant::now() + Duration::from_secs(10),
+                        Duration::from_secs(1),
+                        false,
+                        |_| Ok(vec![1; max_frame]),
+                    )
+                    .await
+            }
+        });
+        let mut marker = [0];
+        guest.read_exact(&mut marker).await.unwrap();
+        assert_eq!(marker, [1]);
+
+        let queued = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .request(
+                        Instant::now() + Duration::from_secs(10),
+                        Duration::from_secs(1),
+                        false,
+                        |_| {
+                            let _ = reserved.send(());
+                            Ok(vec![2; max_frame])
+                        },
+                    )
+                    .await
+            }
+        });
+        both.await.unwrap();
+        let full = client
+            .request(
+                Instant::now() + Duration::from_millis(10),
+                Duration::from_secs(1),
+                false,
+                |_| panic!("admission must wait for byte capacity"),
+            )
+            .await;
+        assert!(matches!(full, Err(Error::Backpressure)));
+
+        acknowledge(&mut guest, first_id).await;
+        assert_eq!(initial.await.unwrap().unwrap(), Value::atom("ok"));
+        let error = timeout(Duration::from_secs(2), session)
+            .await
+            .expect("a partial frame kept the session open")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("partial guest frame"));
+        assert!(blocked.await.unwrap().is_err());
+        assert!(queued.await.unwrap().is_err());
+    }
+}

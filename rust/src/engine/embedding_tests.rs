@@ -1,5 +1,5 @@
-use kettlecorn_launcher::{
-    Cancellation, ExecutionOutcome, GuestOptions, Mode, Runtime, streams::Streams,
+use super::{
+    Cancellation, ExecutionOutcome, GuestOptions, Mode, RootOptions, Runtime, streams::Streams,
 };
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -12,7 +12,7 @@ fn fixture() -> Option<(Runtime, tempfile::TempDir, GuestOptions)> {
     let runtime = Runtime::load(directory).unwrap();
     let guest_root = root.path().join("root");
     runtime
-        .populate_root(&guest_root, &kettlecorn_launcher::RootOptions::default())
+        .populate_root(&guest_root, &RootOptions::default())
         .unwrap();
     let options = GuestOptions::new(guest_root);
     Some((runtime, root, options))
@@ -248,7 +248,7 @@ async fn guest_boot_rejects_incompatible_copied_bundles() {
         let mut options = template.clone();
         options.root = root.path().join("root");
         runtime
-            .populate_root(&options.root, &kettlecorn_launcher::RootOptions::default())
+            .populate_root(&options.root, &RootOptions::default())
             .unwrap();
         let app = options.root.join("app");
         std::fs::create_dir(&app).unwrap();

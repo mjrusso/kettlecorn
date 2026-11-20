@@ -194,6 +194,16 @@
           };
         };
 
+        checks.protocol-version = pkgs.runCommand "kettlecorn-protocol-version" { } ''
+          rust_version=$(sed -nE 's/^pub\(crate\) const VERSION: u32 = ([0-9]+);$/\1/p' ${./rust/src/protocol/mod.rs})
+          if [ "$rust_version" != ${toString protocolVersion} ]; then
+            printf 'host/PROTOCOL_VERSION is %s but Rust VERSION is %s\n' \
+              ${toString protocolVersion} "''${rust_version:-missing}" >&2
+            exit 1
+          fi
+          touch "$out"
+        '';
+
         checks.host-tests = pkgs.callPackage ./nix/host-tests.nix {
           inherit beamPackages runtime;
         };

@@ -101,7 +101,7 @@ lint:
 
 # Clippy, Elixir compilation with warnings as errors, Dialyzer and compile-time cycles.
 typecheck:
-    cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+    cargo clippy --manifest-path rust/Cargo.toml --features cli --all-targets -- -D warnings
     cd host && mix compile --force --warnings-as-errors
     cd host && mix dialyzer --format short
     cd host && mix xref graph --format cycles --label compile-connected --fail-above 0

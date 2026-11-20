@@ -1,8 +1,12 @@
 # Architecture
 
-Each host VM owns a native launcher process with an embedded Wasmtime engine.
-The guest runs OTP inside that process and sees a private copy of the runtime
-root. Host requests use port stdin; guest output returns over a local socket.
+Kettlecorn runs OTP in Wasmtime with a private copy of the runtime root for
+each VM. The Elixir host and CLI start a separate launcher process per VM.
+The Rust crate embeds Wasmtime in the application process and runs VMs as
+Tokio tasks.
+
+For the Elixir host, requests use port stdin and guest output returns over a
+local socket:
 
 ```
  your Elixir app (host)                      Launcher process (one per VM)
@@ -17,9 +21,9 @@ root. Host requests use port stdin; guest output returns over a local socket.
                                           └───────────────────────────────────────┘
 ```
 
-## Host options
+## Elixir host options
 
-Host options use NimbleOptions schemas: `Kettlecorn` defines evaluation
+Elixir host options use NimbleOptions schemas: `Kettlecorn` defines evaluation
 options, `Kettlecorn.VM` defines process options, and `Kettlecorn.Sandbox`
 defines limits, grants, and guest configuration. The schemas supply
 validation, defaults, and option documentation.
@@ -31,7 +35,7 @@ application-name and environment types and converts validation errors to
 certificates, and checks the cooked application path. The sandbox struct
 holds these resolved values.
 
-## VM lifecycle
+## Elixir VM lifecycle
 
 `Instance.prepare/1` creates the private parent directory and passes selected
 certificate bytes and staging paths to the native `--prepare-root` operation.
@@ -58,7 +62,7 @@ Stderr supplies diagnostics; guest fatal frames retain priority.
 The termination record is outside the guest root. Stderr does not determine
 the outcome; a missing result falls back to the process exit status.
 
-## Host transport
+## Elixir host transport
 
 The launcher uses nonblocking fd streams on a current-thread Tokio runtime.
 Its stdout queue holds at most two 1 MiB chunks plus the chunk being written.
@@ -91,27 +95,109 @@ document the input and owner-event budgets.
 
 ## Rust execution API
 
-`rust/` contains an internal, unstable Rust library plus a thin binary.
-The library configures the engine, loads `launch/` files, applies grants and
-limits, manages the native compilation cache, and runs a guest over supplied byte
-streams. It includes bounded in-memory streams for embedding. The binary owns fd
-streams, signals, terminal dimensions, stderr, markers and process exit. Neither
-framing nor ETF decoding is implemented in the library.
+`rust/` contains the `kettlecorn` Rust crate. A native application loads a
+runtime directory with `Runtime::load` and starts a private VM with
+`Runtime::start` on Tokio. The loader checks the runtime's protocol and
+Wasmtime versions. On a blocking thread, startup copies the runtime's
+filesystem into a private directory for the VM and prepares the component.
+The Rust client checks the embedded API version in the guest's
+`:boot_ready` event.
 
-Every execution mode receives the same guest environment, code paths, and
-`-kettlecorn_apps` init argument. `Kettlecorn.Boot.start/0` reads the applications
-from that argument and applies the cooked configuration before starting them.
+Guest execution and transport run in one Tokio task per VM, connected by
+bounded in-memory streams. See [Threads](#threads) for scheduling and parallelism.
+
+`Runtime::warm_up(&options)` prepares the component on a blocking thread
+before a VM starts. A `Runtime` and its clones reuse the prepared component
+when the HTTP setting and the presence of a fuel limit match.
+
+### Request delivery
+
+`Vm::eval` returns captured stdout alongside a script error or, on success,
+the inspected result and an optional structured value. `Vm::call` sends a term
+to a registered guest process and returns its reply. `Vm::cast` waits for
+delivery to the guest proxy. The proxy forwards the cast if the target is
+registered and discards it otherwise. These methods can run concurrently
+with independent deadlines.
+
+The client bounds outgoing requests by frame count and total wire bytes.
+`VmOptions::max_pending_requests` limits requests to the guest, including
+queued writes. One session loop tracks the queued requests, current write
+offset, and requests awaiting replies. Host-call replies have their own
+budget and take priority between frames.
+
+`Error::Backpressure` means the request timed out while waiting for queue
+capacity. `Error::Deadline` means delivery or the guest reply timed out.
+Dropping the request future skips the write if it hasn't started.
+`VmOptions::frame_write_timeout` must be positive and defaults to five
+seconds. The caller's deadline can shorten it for requests. A stalled
+host reply or partial frame closes the session. Once a request has been
+written, it counts toward `max_pending_requests` until the guest
+replies or a separate timer expires. That timer starts when the write
+finishes and uses the request's full timeout budget. The request continues
+to occupy a pending-request slot after the caller stops waiting.
+
+`Vm::shutdown` cancels the VM and waits for private-root cleanup.
+
+### Guest callbacks
+
+Use `VmOptions::register` to register async callbacks. While a callback
+awaits I/O, the client continues dispatching replies and guest events.
+`VmOptions::max_host_calls` limits calls from the guest, including replies
+waiting to be written. If a new call would exceed the limit or its arguments
+cannot be decoded, the client can send an error when it has a valid reply
+token and room in the rejection queue. If the queue is full, the guest call
+can time out.
+
+The [device monitor](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#device-monitor)
+uses named calls to dispatch events to Elixir plugins with an async Rust
+callback for alerts.
+
+### Events and output
+
+`Vm::subscribe` receives future `Kettlecorn.Host.send/1` events. Slow
+subscribers receive a lag count and can resume at the oldest retained event.
+`VmOptions::events` accepts a broadcast sender. Create a receiver before
+starting the VM to receive guest messages sent during boot. The channel
+capacity sets how many messages it retains.
+
+`VmOptions::stdout` forwards guest stdout outside eval capture.
+`VmOptions::stderr` forwards guest and transport diagnostics, including during boot.
+Both send to caller-supplied bounded channels and drop chunks when full.
+
+### Guest values
+
+The Rust decoder keeps atoms as strings and supports binaries, numbers,
+proper lists, tuples, and maps, with a limit of 100,000 terms and a nesting
+depth of 64. Maps compare independently of insertion order, including when
+used as keys. Construction and decoding keep the last value for duplicate
+keys. The proxy replies to an oversized result with
+`{:error, :frame_too_large}` and the original request ID. See the
+[protocol specification](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md)
+for frame size limits and how the client handles oversized frames.
+
+## Shared execution engine
+
+The `cli` Cargo feature enables the `kettlecorn-launch` binary. The CLI
+connects the engine to file descriptors and handles signals, terminal
+dimensions, diagnostics, termination records, and process exit.
+
+All execution modes read the guest environment and arguments from the
+runtime's launch files. Embedded Rust VMs also set
+`KETTLECORN_MAX_GUEST_FRAME_BYTES` to advertise the frame size limit to the guest.
+`Kettlecorn.Boot.start/0` reads the applications from the `-kettlecorn_apps`
+init argument and applies the cooked configuration before starting them.
 Scripts and IEx invoke this boot sequence before their user code runs.
 
-The Rust API separates preparation from execution. `Runtime::prepare` is
-synchronous and serializes compilation across clones of a loaded runtime. It
-retains up to two engines (with and without fuel instrumentation) and four
-HTTP/fuel component variants. Callers own the bounded blocking executor used for
-preparation; the library starts no detached compilation jobs.
+The engine's internal API separates preparation from execution.
+`Runtime::prepare` is synchronous and serializes compilation across clones
+of a loaded runtime. It retains up to two engines (with and without fuel
+instrumentation) and four HTTP/fuel component variants. The CLI and embedded
+Rust VMs submit preparation to Tokio's blocking executor.
 `PreparedRuntime::run` reuses that code and owns only its store, limits, streams,
-and cancellation state. Each execution needs a fresh private writable root;
-use `Runtime::populate_root` with `RootOptions` to create it. The execution's
-HTTP and fuel instrumentation settings must match the prepared component.
+and cancellation state. The engine creates each execution's private writable
+root with the internal `Runtime::populate_root` method and `RootOptions`.
+The execution's HTTP and fuel instrumentation settings must match the prepared
+component.
 
 Each store checks its own cancellation and deadline in the epoch callback,
 so executions can share an engine without sharing cancellation. Prepared runtimes
@@ -121,7 +207,7 @@ lifetime deadline covering preparation, execution, and output draining. Normal
 guest exits drain queued output within the remaining lifetime budget. If draining
 reaches the deadline, the launcher reports a timeout. Timeout, cancellation, fuel
 exhaustion, and failure discard queued output so a stalled reader cannot delay
-termination publication or cleanup.
+reporting VM termination or cleanup.
 
 ## Mix task
 
@@ -133,9 +219,9 @@ exits, the pipe closes, and the script stops its child and cleans up the private
 
 ## Threads
 
-Each guest executes on **one OS thread**. wasi-libc's cooperative threads make
-every pthread (BEAM schedulers, the aux and poll threads, the stdio bridge)
-a component-model thread, and threads switch only at blocking calls or
+Each guest executes on **one OS thread at a time**. wasi-libc's cooperative
+threads make every pthread (BEAM schedulers, the aux and poll threads, the
+stdio bridge) a component-model thread, and threads switch only at blocking calls or
 explicit yields. ERTS assumes preemptive threads, so the patch adapts it
 for `__wasi__`:
 
@@ -145,8 +231,18 @@ for `__wasi__`:
   including the bridge that delivers host messages, get to run;
 * an idle scheduler yields in `scheduler_wait` instead of busy-looping.
 
-More schedulers add no parallelism within a VM. Separate VMs can run in
-parallel, each in its own launcher process.
+More schedulers add no parallelism within a VM. Rust VMs run as Tokio tasks
+inside the application process and have no dedicated OS thread. On a
+multithreaded Tokio runtime, a VM can move between worker threads when
+rescheduled, and separate VMs can execute in parallel. On a single-threaded
+runtime, the VMs share that thread with other tasks.
+
+The Elixir host and CLI run each VM in a separate launcher process with a
+current-thread Tokio runtime. Separate launcher processes can execute in
+parallel. For embedded Rust VMs, runtime preparation and private-root copying
+and cleanup use Tokio's blocking thread pool. Each shared engine also has a
+helper thread that advances Wasmtime's epoch clock for yielding and
+cancellation checks.
 
 ## OTP patches
 
@@ -209,23 +305,26 @@ a wasm load's unsigned offset immediate, and the load traps.
 
 ## Framed stdio
 
-During `Kettlecorn.eval/3`, the evaluation's group leader captures standard
-output for the result's `"output"` field. Writes to stderr bypass this capture
-and reach the host as console frames. The host combines console stdout and
+During evaluation through either API, the evaluation's group leader captures
+standard output for the result. Writes to stderr bypass this capture and
+reach the host as console frames. The Elixir host combines console stdout and
 stderr in the `Kettlecorn.take_output/1` buffer and preserves their stream
-labels in owner events.
+labels in owner events. Rust returns captured stdout in `Evaluation::output`
+and forwards console output through `VmOptions::stdout` and `VmOptions::stderr`.
 
 The guest reads length-prefixed frames from stdin and writes them to stdout
 ([`PROTOCOL.md`](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md)). Each frame
 is a 4-byte length, a type byte, then the payload: console output, ETF
-messages, stdin data, sends with delivery results, or fatal errors. The launcher
-transports guest output to the host over the [local socket](#host-transport).
+messages, stdin data, sends with delivery results, or fatal errors. The Elixir
+host's launcher transports guest output over the
+[local socket](#elixir-host-transport). Embedded Rust VMs use bounded in-memory
+streams for the same frames.
 
 The linker flags `--wrap=write --wrap=writev` frame all writes to fd 1 and 2,
 including `IO.puts`, logger output, and ERTS diagnostics.
 Without `KETTLECORN_FRAMED=1` in the guest environment, stdio is plain,
-which is how `kettlecorn-run` runs scripts. The host launcher forces framing
-on after merging user environment variables.
+which is how `kettlecorn-run` runs scripts. The shared engine forces framing
+on for host VMs and embedded Rust VMs after merging environment variables.
 
 The bridge queues stdin independently of message delivery. Unread stdin
 cannot block host calls or other frames. `prim_tty` reads the queue through
@@ -248,7 +347,7 @@ queues EOF when stdin closes; closing the framed transport exits the VM.
 
 ### Guest-data decoding
 
-The guest is untrusted, so the host decodes guest terms with
+The guest is untrusted, so the Elixir host decodes guest terms with
 `Kettlecorn.ETF`, never `binary_to_term/1`. The decoder creates no atoms,
 funs, or structs of host modules. This prevents a guest from supplying
 fields to a host module's protocol implementations.
@@ -263,11 +362,18 @@ envelopes and normalizes malformed proxy results to `{:error, {:bad_reply, value
 `Kettlecorn.VM` updates the boot state, replies to pending callers, and notifies
 the owner.
 
-### Owner delivery
+The Rust API uses its own ETF decoder and represents atoms as strings in
+`Value::Atom`. Its supported values and decoding limits are described under
+[Guest values](#guest-values).
 
-Owner delivery tracks outstanding event counts and estimated retained byte sizes.
-Owners acknowledge events after consumption; overflow stops the VM before delivering
-another event. Protocol replies and boot events bypass owner accounting.
+### Elixir owner delivery
+
+The Elixir host's owner delivery tracks outstanding event counts and
+estimated retained byte sizes. Owners acknowledge events after consumption;
+overflow stops the VM before delivering another event. Protocol replies and
+boot events bypass owner accounting.
+
+For Rust delivery behavior, see [Events and output](#events-and-output).
 
 ## Evaluation
 
@@ -294,7 +400,7 @@ cleanup is best effort and VM limits remain necessary.
 
 ## Req adapter selection
 
-The Rust launcher passes `-kettlecorn_network` when the network grant is
+The shared Rust engine passes `-kettlecorn_network` when the network grant is
 enabled. `Kettlecorn.Boot.network_granted?/0` reads this runtime setting;
 `Kettlecorn.HTTP.available?/0` reports whether the HTTP component is linked.
 `Kettlecorn.GuestApplication` selects and installs
@@ -304,14 +410,19 @@ The flag is informational; Wasmtime enforces socket and DNS permissions.
 ## CA certificates
 
 OTP finds a system's CA certificates by its OS type, and has no location
-for WASI (`:public_key.cacerts_get/0` fails with `enotsup`). With the
-network grant, native root population writes a selected PEM bundle to the guest
-path in the runtime's `KETTLECORN_CACERTFILE` (`launch/env`). `Kettlecorn.Boot` loads
-that file with `:public_key.cacerts_load/1` before starting applications, so
+for WASI (`:public_key.cacerts_get/0` fails with `enotsup`). For the Elixir host
+and CLI, the network grant enables native root population to write a selected
+PEM bundle to the guest path in the runtime's `KETTLECORN_CACERTFILE`
+(`launch/env`). `Kettlecorn.Boot` loads that file with
+`:public_key.cacerts_load/1` before starting applications, so
 `cacerts_get/0` returns them and Mint uses them by default. `Kettlecorn.Sandbox`
 selects and encodes the host's certificates (`:cacerts`); `kettlecorn-run`
 discovers the host's bundle file (`--cacertfile`). Both pass the selected file
 to the native populator without reading the guest destination themselves.
+
+Embedded Rust VMs do not import host CA certificates during startup, and
+`VmOptions` has no certificate option. Enabling `network` alone does not
+install a guest CA bundle.
 
 With `wasi:http`, Wasmtime does TLS itself, with its compiled Mozilla root CA
 list. The guest's CA bundle does not change those roots.
@@ -345,8 +456,8 @@ or replace the exit status.
 Every runtime's `manifest.json` records:
 
 - its Kettlecorn version, and the OTP and Elixir versions it contains;
-- the protocol version (`host/PROTOCOL_VERSION`). The library checks it for
-  every VM (`Kettlecorn.Runtime.load!/1`) and refuses a runtime with a
+- the protocol version (`host/PROTOCOL_VERSION`). The Elixir library checks
+  it for every VM (`Kettlecorn.Runtime.load!/1`) and refuses a runtime with a
   different protocol version;
 - `imports`: the WASI interfaces each emulator imports, read from the
   components at build time. This is what a host must provide.
@@ -355,8 +466,11 @@ Every runtime's `manifest.json` records:
   `beam-http.wasm` adds `wasi:http` at 0.3.0 (from wasmtime's WIT files);
 - `tested_with`: the Wasmtime version the checks ran against. The runtime needs
   component-model async and threading.
-  The native launcher embeds the version pinned in `rust/Cargo.toml`;
-  `platform` selects its OS and CPU.
+  The Rust crate and native launcher embed the version pinned in
+  `rust/Cargo.toml`; `platform` selects its OS and CPU.
+
+Rust's `Runtime::load` checks both the protocol version and the exact Wasmtime
+version in `tested_with` before loading the runtime's launch configuration.
 
 The runtime and the guest application's version both come from `host/VERSION`.
 
@@ -376,9 +490,11 @@ for example with `cp -RL`.
 
 Cooked bundles include `kettlecorn.json` with their protocol, OTP major, and
 exact Elixir version. Cooking uses `Runtime.load/1` when a runtime is supplied,
-and rejects a mismatched compiler. The host checks the bundle before copying it;
-guest boot checks the copied bundle before loading its code. Both checks
-reject missing or extra metadata fields. The runtime and bundle contract use
+and rejects a mismatched compiler. The Elixir host checks the bundle before
+copying it. Rust startup copies the bundle without this preliminary check.
+All execution modes validate the copied bundle during guest boot before
+loading its code. The Elixir host and guest boot checks reject missing or
+extra metadata fields. The runtime and bundle contract use
 `host/PROTOCOL_VERSION`.
 
 ## Popcorn

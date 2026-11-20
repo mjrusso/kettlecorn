@@ -40,10 +40,15 @@ impl Default for CompilationCache {
 }
 
 impl CompilationCache {
-    pub(crate) fn compile(&self, engine: &Engine, source: &Path, root: &Path) -> Result<Component> {
+    pub(crate) fn compile(
+        &self,
+        engine: &Engine,
+        source: &Path,
+        guest_root: Option<&Path>,
+    ) -> Result<Component> {
         let wasm = fs::read(source)?;
         let directory = match self {
-            Self::Directory(path) => trusted_directory(path, root).ok(),
+            Self::Directory(path) => trusted_directory(path, guest_root).ok(),
             Self::Disabled => None,
         };
         let Some(directory) = directory else {
@@ -71,23 +76,28 @@ impl CompilationCache {
     }
 }
 
-fn trusted_directory(path: &Path, root: &Path) -> Result<File> {
-    let ancestor = path
-        .ancestors()
-        .find(|path| path.exists())
-        .ok_or_else(|| anyhow::anyhow!("cache has no existing parent"))?;
-    anyhow::ensure!(
-        !ancestor.canonicalize()?.starts_with(root.canonicalize()?),
-        "cache is guest-writable"
-    );
+fn trusted_directory(path: &Path, guest_root: Option<&Path>) -> Result<File> {
+    let guest_root = guest_root.map(Path::canonicalize).transpose()?;
+    if let Some(root) = &guest_root {
+        let ancestor = path
+            .ancestors()
+            .find(|path| path.exists())
+            .ok_or_else(|| anyhow::anyhow!("cache has no existing parent"))?;
+        anyhow::ensure!(
+            !ancestor.canonicalize()?.starts_with(root),
+            "cache is guest-writable"
+        );
+    }
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(path)?;
-    anyhow::ensure!(
-        !path.canonicalize()?.starts_with(root.canonicalize()?),
-        "cache is guest-writable"
-    );
+    if let Some(root) = &guest_root {
+        anyhow::ensure!(
+            !path.canonicalize()?.starts_with(root),
+            "cache is guest-writable"
+        );
+    }
     let directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -226,7 +236,7 @@ mod tests {
         fs::write(&source, b"\0asm\x0d\0\x01\0").unwrap();
         let root = base.path().join("root");
         fs::create_dir(&root).unwrap();
-        (base, crate::engine(false).unwrap(), source, root)
+        (base, super::super::engine(false).unwrap(), source, root)
     }
 
     #[test]
@@ -234,7 +244,7 @@ mod tests {
         let (base, engine, source, root) = fixture();
         let directory = base.path().join("cache");
         let cache = CompilationCache::Directory(directory.clone());
-        cache.compile(&engine, &source, &root).unwrap();
+        cache.compile(&engine, &source, Some(&root)).unwrap();
         let entry = fs::read_dir(&directory)
             .unwrap()
             .next()
@@ -242,15 +252,18 @@ mod tests {
             .unwrap()
             .path();
         fs::write(&entry, b"corrupt").unwrap();
-        cache.compile(&engine, &source, &root).unwrap();
-        let private = trusted_directory(&directory, &root).unwrap();
+        cache.compile(&engine, &source, Some(&root)).unwrap();
+        let private = trusted_directory(&directory, Some(&root)).unwrap();
         let name = entry.file_name().unwrap().to_str().unwrap();
-        let other = Component::new(&crate::engine(true).unwrap(), fs::read(&source).unwrap())
-            .unwrap()
-            .serialize()
-            .unwrap();
+        let other = Component::new(
+            &super::super::engine(true).unwrap(),
+            fs::read(&source).unwrap(),
+        )
+        .unwrap()
+        .serialize()
+        .unwrap();
         save(&private, name, &other).unwrap();
-        cache.compile(&engine, &source, &root).unwrap();
+        cache.compile(&engine, &source, Some(&root)).unwrap();
         load(&engine, &private, name).unwrap();
     }
 
@@ -262,23 +275,23 @@ mod tests {
             fs::create_dir(&directory).unwrap();
             fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
             CompilationCache::Directory(directory.clone())
-                .compile(&engine, &source, &root)
+                .compile(&engine, &source, Some(&root))
                 .unwrap();
             assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, mode);
             assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
         }
         let inside = root.join("cache");
         CompilationCache::Directory(inside.clone())
-            .compile(&engine, &source, &root)
+            .compile(&engine, &source, Some(&root))
             .unwrap();
         assert!(!inside.exists());
         CompilationCache::Directory(PathBuf::from("/"))
-            .compile(&engine, &source, &root)
+            .compile(&engine, &source, Some(&root))
             .unwrap();
         let link = base.path().join("link");
         std::os::unix::fs::symlink(&root, &link).unwrap();
         CompilationCache::Directory(link.join("cache"))
-            .compile(&engine, &source, &root)
+            .compile(&engine, &source, Some(&root))
             .unwrap();
         assert!(!inside.exists());
     }
@@ -286,7 +299,7 @@ mod tests {
     #[test]
     fn eviction_removes_old_entries_to_bound_disk_use() {
         let (base, _engine, _source, root) = fixture();
-        let directory = trusted_directory(&base.path().join("cache"), &root).unwrap();
+        let directory = trusted_directory(&base.path().join("cache"), Some(&root)).unwrap();
         evict(&directory);
         let old = open_at(&directory, "old.cwasm", libc::O_CREAT | libc::O_WRONLY).unwrap();
         old.set_len(MAX_BYTES).unwrap();
@@ -311,11 +324,11 @@ mod tests {
                 let source = &source;
                 let root = &root;
                 scope.spawn(move || {
-                    cache.compile(engine, source, root).unwrap();
+                    cache.compile(engine, source, Some(root)).unwrap();
                 });
             }
         });
-        let private = trusted_directory(&directory, &root).unwrap();
+        let private = trusted_directory(&directory, Some(&root)).unwrap();
         for entry in fs::read_dir(&directory).unwrap() {
             let entry = entry.unwrap();
             load(&engine, &private, entry.file_name().to_str().unwrap()).unwrap();

@@ -11,13 +11,14 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../rust/Cargo.lock;
   nativeBuildInputs = [ pkg-config cmake perl ]
     ++ lib.optionals stdenv.hostPlatform.isDarwin [ darwin.autoSignDarwinBinariesHook ];
+  buildFeatures = [ "cli" ];
   doCheck = true;
   cargoTestFlags = [ "--lib" ];
   postInstall = ''
     mkdir -p $out/share/licenses/kettlecorn-launcher
     for crate in $cargoDeps/*; do
       [ -d "$crate" ] || continue
-      dest=$out/share/licenses/kettlecorn-rust/$(basename "$crate")
+      dest=$out/share/licenses/kettlecorn-launcher/$(basename "$crate")
       mkdir -p "$dest"
       find -L "$crate" -maxdepth 2 -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) -exec cp --backup=numbered '{}' "$dest/" \;
       [ -n "$(ls -A "$dest")" ] || cp "$crate/Cargo.toml" "$dest/"

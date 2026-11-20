@@ -14,6 +14,7 @@ pub struct Streams {
 }
 
 impl Streams {
+    /// Adapters must poll without blocking the Tokio worker that runs the guest.
     pub fn new(
         stdin: impl StdinStream + Sync + 'static,
         stdout: impl StdoutStream + Sync + 'static,

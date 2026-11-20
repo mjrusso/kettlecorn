@@ -43,7 +43,7 @@ directory. Distribute that directory with the runtime.
 The native launcher embeds [Wasmtime](https://github.com/bytecodealliance/wasmtime)
 (Apache-2.0 WITH LLVM-exception) and its locked Rust dependencies
 (`rust/Cargo.lock`). Their license and notice information is included under
-`licenses/rust/<crate>/`. Wasmtime is part of each platform runtime archive.
+`licenses/launcher/<crate>/`. Wasmtime is part of each platform runtime archive.
 
 A cooked application (`Kettlecorn.Cook`) adds that application's
 dependencies to the guest. Their licenses are the cooking project's

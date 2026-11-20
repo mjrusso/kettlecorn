@@ -110,7 +110,7 @@ request capacity. Request rejection leaves the VM running.
 
 VM termination fails pending requests with `{:error, {:vm_down, reason}}`.
 Use OS-level limits on the host BEAM process for a hard memory cap. See
-[host transport](architecture.md#host-transport) for queueing and framing details.
+[host transport](architecture.md#elixir-host-transport) for queueing and framing details.
 
 ## Disk use
 
@@ -149,7 +149,7 @@ if confirmation fails, it retains the directory and logs an error.
 The memory cap covers WebAssembly linear memory. Use OS limits for total RSS,
 and namespaces, seccomp, or cgroups when the launcher needs additional
 confinement. Guest execution uses one OS thread; compilation and WASI operations
-can use helper threads. See [VM lifecycle](architecture.md#vm-lifecycle) for
+can use helper threads. See [VM lifecycle](architecture.md#elixir-vm-lifecycle) for
 root preparation, cancellation, and termination records.
 
 ## Compilation cache

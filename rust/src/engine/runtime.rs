@@ -1,4 +1,4 @@
-use crate::{CompilationCache, Preparation, WASMTIME_VERSION};
+use super::{CompilationCache, Preparation, RootOptions, WASMTIME_VERSION, root};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -7,13 +7,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
-pub enum Mode {
+pub(crate) enum Mode {
     Boot,
-    Cli { iex: bool, args: Vec<String> },
+    #[cfg(any(feature = "cli", test))]
+    Cli {
+        iex: bool,
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
-pub struct GuestOptions {
+pub(crate) struct GuestOptions {
     pub root: PathBuf,
     pub framed: bool,
     pub mode: Mode,
@@ -59,7 +63,7 @@ impl GuestOptions {
 #[derive(Clone)]
 pub struct Runtime {
     directory: PathBuf,
-    pub(crate) preparation: Arc<Mutex<Preparation>>,
+    pub(super) preparation: Arc<Mutex<Preparation>>,
     emulator: Vec<String>,
     init: Vec<String>,
     env: BTreeMap<String, String>,
@@ -69,6 +73,7 @@ pub struct Runtime {
 
 #[derive(Deserialize)]
 struct Manifest {
+    protocol: u32,
     tested_with: Tested,
 }
 #[derive(Deserialize)]
@@ -79,7 +84,7 @@ struct Tested {
 impl Runtime {
     /// Populates a new private root. Sources are dereferenced and copies are
     /// writable; failures remove the new root without changing the sources.
-    pub fn populate_root(&self, root: &Path, options: &crate::RootOptions) -> Result<()> {
+    pub(crate) fn populate_root(&self, root: &Path, options: &RootOptions) -> Result<()> {
         let parent = root
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -91,7 +96,7 @@ impl Runtime {
             !root.starts_with(&self.directory),
             "private root must be outside the runtime"
         );
-        crate::root::populate(
+        root::populate(
             &self.directory.join("root"),
             &root,
             options,
@@ -99,11 +104,12 @@ impl Runtime {
         )
     }
 
-    pub fn load(directory: impl AsRef<Path>) -> Result<Self> {
-        let directory = directory
-            .as_ref()
-            .canonicalize()
-            .context("runtime directory")?;
+    pub fn load(directory: impl AsRef<Path>) -> Result<Self, crate::Error> {
+        Self::load_runtime(directory.as_ref()).map_err(crate::Error::InvalidRuntime)
+    }
+
+    fn load_runtime(directory: &Path) -> Result<Self> {
+        let directory = directory.canonicalize().context("runtime directory")?;
         let manifest: Manifest =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
         ensure!(
@@ -111,6 +117,12 @@ impl Runtime {
             "runtime requires Wasmtime {}, launcher embeds {}",
             manifest.tested_with.wasmtime,
             WASMTIME_VERSION
+        );
+        ensure!(
+            manifest.protocol == crate::protocol::VERSION,
+            "runtime protocol {} does not match {}",
+            manifest.protocol,
+            crate::protocol::VERSION
         );
         let launch = directory.join("launch");
         let env = lines(&launch.join("env"))?
@@ -145,7 +157,7 @@ impl Runtime {
         })
     }
 
-    pub fn validate(&self, options: &GuestOptions) -> Result<()> {
+    pub(crate) fn validate(&self, options: &GuestOptions) -> Result<()> {
         ensure!(options.root.is_dir(), "guest root does not exist");
         ensure!(options.schedulers > 0, "at least one scheduler is required");
         let root = options.root.canonicalize()?;
@@ -186,6 +198,7 @@ impl Runtime {
             args.push("-kettlecorn_network".into());
         }
         match &options.mode {
+            #[cfg(any(feature = "cli", test))]
             Mode::Cli {
                 iex: true,
                 args: extra,
@@ -207,6 +220,7 @@ impl Runtime {
                 }
                 args.extend(extra.clone());
             }
+            #[cfg(any(feature = "cli", test))]
             Mode::Cli {
                 iex: false,
                 args: extra,
@@ -222,7 +236,8 @@ impl Runtime {
     }
 
     /// Arguments for optional manual debugging with the matching Wasmtime CLI.
-    pub fn wasmtime_command(&self, options: &GuestOptions) -> Vec<String> {
+    #[cfg(feature = "cli")]
+    pub(crate) fn wasmtime_command(&self, options: &GuestOptions) -> Vec<String> {
         let mut args = vec![
             "wasmtime".into(),
             "run".into(),

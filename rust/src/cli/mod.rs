@@ -1,17 +1,12 @@
 mod fd;
 mod terminal;
-mod unix;
 
-#[cfg(all(target_os = "linux", target_env = "musl"))]
-#[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-use anyhow::{Context, Result};
-use clap::Parser;
-use kettlecorn_launcher::{
+use crate::engine::{
     Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, Mode, RootOptions, Runtime,
     WASMTIME_VERSION, streams::Streams,
 };
+use anyhow::{Context, Result};
+use clap::Parser;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -26,6 +21,7 @@ use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
+    name = "kettlecorn-launcher",
     version,
     about = "Run a Kettlecorn guest with the bundled Wasmtime engine"
 )]
@@ -318,7 +314,7 @@ async fn execute(args: Args) -> Result<ExecutionOutcome> {
     }
 }
 
-fn main() {
+pub fn main() {
     // Establish the error sink and marker before argument validation, so a
     // malformed host invocation still confirms termination to Kettlecorn.VM.
     let raw = std::env::args_os().collect::<Vec<_>>();
