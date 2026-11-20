@@ -4,6 +4,7 @@
 # Resolve the working tree's runtime only in recipes that use it.
 runtime := 'KETTLECORN_RUNTIME=$(nix build .#runtime --no-link --print-out-paths) || exit; export KETTLECORN_RUNTIME'
 extra_elixir := '../examples/apps/*/mix.exs $(find ../examples/rust -name target -prune -o -name "*.exs" -print) $(find ../guest/lib -name "*.ex")'
+release_targets := 'x86_64-linux aarch64-linux aarch64-darwin'
 
 default:
     @just --list
@@ -128,10 +129,11 @@ lint:
     cd host && mix format --check-formatted && mix format --check-formatted {{extra_elixir}}
     cd host && mix deps.unlock --check-unused && mix credo && mix reach.check --arch
     cmp LICENSE host/LICENSE  # the Hex package carries a copy
+    cmp host/priv/checksums.txt rust/checksums.txt
 
 # Clippy, Elixir compilation with warnings as errors, Dialyzer and compile-time cycles.
 typecheck:
-    cargo clippy --manifest-path rust/Cargo.toml --features cli --all-targets -- -D warnings
+    cargo clippy --manifest-path rust/Cargo.toml --features cli,installer --all-targets -- -D warnings
     for manifest in examples/rust/*/Cargo.toml; do cargo clippy --manifest-path "$manifest" --locked --target-dir rust/target --all-targets -- -D warnings || exit; done
     cd host && mix compile --force --warnings-as-errors
     cd host && mix dialyzer --format short
@@ -163,19 +165,81 @@ docs:
 release-archive:
     nix build .#release -o release
 
-# Record every published platform archive checksum in the Hex package.
+# Record the same release checksums in both language packages.
 release-checksums version:
     #!/usr/bin/env bash
     set -euo pipefail
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-    for target in x86_64-linux aarch64-linux aarch64-darwin; do
-      name="kettlecorn-runtime-{{version}}-$target.tar.gz"
-      base="https://github.com/mjrusso/kettlecorn/releases/download/v{{version}}"
+    version={{quote(version)}}
+    for target in {{release_targets}}; do
+      name="kettlecorn-runtime-$version-$target.tar.gz"
+      base="https://github.com/mjrusso/kettlecorn/releases/download/v$version"
       curl -fsSL -o "$tmp/$name" "$base/$name"
       curl -fsSL -o "$tmp/$name.sha256" "$base/$name.sha256"
       (cd "$tmp" && sha256sum -c "$name.sha256")
     done
-    (cd "$tmp" && sha256sum *.tar.gz) | tee host/priv/checksums.txt
+    (cd "$tmp" && sha256sum *.tar.gz) | tee host/priv/checksums.txt rust/checksums.txt
+
+check-release-checksums:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(cat host/VERSION)
+    crate_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["package"]["version"])' < rust/Cargo.toml)
+    if [[ "$version" != "$crate_version" ]]; then
+      echo "Package versions differ: Hex $version, Cargo $crate_version" >&2
+      exit 1
+    fi
+    cmp host/priv/checksums.txt rust/checksums.txt
+    for target in {{release_targets}}; do
+      name="kettlecorn-runtime-$version-$target.tar.gz"
+      if ! awk -v name="$name" '
+        $2 == name {
+          count++
+          valid = length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && $0 == ($1 "  " name)
+        }
+        END { exit !(count == 1 && valid) }
+      ' rust/checksums.txt; then
+        echo "Expected exactly one valid SHA-256 for $name in both packages." >&2
+        exit 1
+      fi
+    done
+
+# Verify that the Rust and Elixir installers share the published runtime cache.
+release-smoke-rust: check-release-checksums
+    cargo run --locked --manifest-path rust/Cargo.toml --features installer --example release-install-smoke
+
+test-runtime-cache archive:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    archive=$(realpath {{quote(archive)}})
+    if [[ ! -f "$archive" ]]; then
+      echo "Runtime archive does not exist: $archive" >&2
+      exit 1
+    fi
+    export KETTLECORN_TEST_RUNTIME_ARCHIVE="$archive"
+    cache=$(mktemp -d)
+    trap 'rm -rf "$cache"' EXIT
+    cache=$(cd "$cache" && pwd -P)
+    unset KETTLECORN_RUNTIME XDG_CACHE_HOME
+    mkdir "$cache/home"
+    if [[ $(uname -s) == Linux ]]; then
+      mkdir -p "$cache/other/child"
+      ln -s "$cache/other/child" "$cache/link"
+      export XDG_CACHE_HOME="$cache/link/../cache"
+      cache_parent="$cache/cache"
+    else
+      cache_parent="$cache/home/Library/Caches"
+    fi
+    mkdir -p "$(dirname "$cache_parent")" "$cache/original-cache"
+    ln -s "$cache/original-cache" "$cache_parent"
+    export KETTLECORN_TEST_CACHE_PARENT="$cache_parent"
+    export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+    env HOME="$cache/home" KETTLECORN_TEST_CACHE_HANDOFF="$cache" \
+      cargo test --locked --manifest-path rust/Cargo.toml --features installer --lib
+    if [[ ! -f "$cache/complete" ]]; then
+      echo 'The offline cache handoff did not complete.' >&2
+      exit 1
+    fi
 
 # Needs a cache write token configured with `cachix authtoken <TOKEN>`;
 # see host/guides/development.md, "Binary cache".

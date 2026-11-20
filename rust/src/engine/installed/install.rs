@@ -417,4 +417,51 @@ mod tests {
         assert_eq!(generations.read_dir()?.count(), 0);
         Ok(())
     }
+
+    #[test]
+    fn offline_cache_handoff() -> Result<()> {
+        let Some(workspace) = std::env::var_os("KETTLECORN_TEST_CACHE_HANDOFF") else {
+            return Ok(());
+        };
+        let workspace = PathBuf::from(workspace);
+        let archive = std::env::var_os("KETTLECORN_TEST_RUNTIME_ARCHIVE")
+            .context("cache handoff requires a local release archive")?;
+        let bytes = fs::read(archive).context("read local release archive")?;
+        let cache = workspace.join(if cfg!(target_os = "macos") {
+            "home/Library/Caches"
+        } else {
+            "cache"
+        });
+        let directory = installed_dir()?;
+        assert_eq!(
+            directory,
+            cache.join(format!("kettlecorn/runtime-{RELEASE_VERSION}"))
+        );
+        assert!(matches!(Runtime::find(), Err(Error::RuntimeNotFound(_))));
+
+        let elixir = |action: &str| -> Result<()> {
+            let status = std::process::Command::new("mix")
+                .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../host"))
+                .env("MIX_ENV", "test")
+                .args(["run", "../tests/runtime-cache.exs", action])
+                .status()
+                .with_context(|| format!("run Elixir cache handoff {action}"))?;
+            ensure!(
+                status.success(),
+                "Elixir cache handoff {action} failed: {status}"
+            );
+            Ok(())
+        };
+
+        elixir("publish")?;
+        Runtime::find()?;
+        fs::remove_file(&directory)?;
+
+        let checksum = format!("{:x}", Sha256::digest(&bytes));
+        assert!(install_archive(&directory, &bytes[..], &checksum, |_| {})?.is_some());
+        elixir("find")?;
+
+        fs::write(workspace.join("complete"), [])?;
+        Ok(())
+    }
 }

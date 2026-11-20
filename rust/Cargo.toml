@@ -19,6 +19,10 @@ required-features = ["cli"]
 name = "embedding"
 harness = false
 
+[[example]]
+name = "release-install-smoke"
+required-features = ["installer"]
+
 [features]
 default = ["http"]
 cli = ["dep:clap", "dep:humantime", "dep:mimalloc", "tokio/signal"]
