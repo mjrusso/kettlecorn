@@ -40,8 +40,8 @@ variants, each a WebAssembly component; `beam-http.wasm` also imports
 `kettlecorn_guest` application, as `.beam` files.
 
 ```elixir
-runtime = Kettlecorn.Runtime.dir()
-File.ls!(runtime) |> Enum.sort()
+{:ok, %{dir: runtime_dir, manifest: manifest}} = Kettlecorn.Runtime.find([])
+File.ls!(runtime_dir) |> Enum.sort()
 ```
 
 `manifest.json` records the versions, the protocol version the library
@@ -49,7 +49,6 @@ checks before it starts a VM, and the WASI interfaces each emulator imports
 (read from the components when the runtime was built):
 
 ```elixir
-manifest = Kettlecorn.Runtime.load!(runtime).manifest
 Map.drop(manifest, [:imports])
 ```
 
@@ -62,8 +61,8 @@ from `launch/` for both host VMs and the script CLI. Argument files hold one
 argument per line:
 
 ```elixir
-for file <- File.ls!(Path.join(runtime, "launch")) |> Enum.sort(), into: %{} do
-  {file, File.read!(Path.join([runtime, "launch", file])) |> String.split("\n", trim: true)}
+for file <- File.ls!(Path.join(runtime_dir, "launch")) |> Enum.sort(), into: %{} do
+  {file, File.read!(Path.join([runtime_dir, "launch", file])) |> String.split("\n", trim: true)}
 end
 ```
 

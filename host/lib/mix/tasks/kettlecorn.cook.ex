@@ -19,8 +19,9 @@ defmodule Mix.Tasks.Kettlecorn.Cook do
   Options:
 
     * `--out` - output path (default `_kettlecorn`). Cooking publishes a symbolic
-      link and replaces it after a successful cook. Move an existing ordinary
-      directory aside first; see `Kettlecorn.Cook.cook/1` for retained copies.
+      link after a successful cook. Use a path you own. Cooking can overwrite
+      an existing file there. Move an existing ordinary directory aside first.
+      See `Kettlecorn.Cook.cook/1` for retained copies.
     * `--app` - entrypoint application (default: the current project's).
     * `--root` - another application to cook with its dependencies (see
       `:roots` in `Kettlecorn.Cook.cook/1`); can be given more than once.

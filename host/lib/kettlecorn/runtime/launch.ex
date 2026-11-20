@@ -23,10 +23,12 @@ defmodule Kettlecorn.Runtime.Launch do
   end
 
   defp emulator(dir, name) do
-    case lines(dir, name) do
-      {:ok, [module]} -> in_runtime(dir, module)
-      {:ok, _lines} -> {:error, "#{dir}/launch/#{name} doesn't name one emulator"}
-      {:error, _} = error -> error
+    with {:ok, text} <- read(dir, name) do
+      module = String.trim(text)
+
+      if module == "" or String.contains?(module, ["\r", "\n"]),
+        do: {:error, "#{dir}/launch/#{name} doesn't name one emulator"},
+        else: in_runtime(dir, module)
     end
   end
 
@@ -37,10 +39,18 @@ defmodule Kettlecorn.Runtime.Launch do
   end
 
   defp lines(dir, name) do
+    with {:ok, text} <- read(dir, name) do
+      {:ok, :binary.split(text, ["\r\n", "\n"], [:global, :trim_all])}
+    end
+  end
+
+  defp read(dir, name) do
     path = Path.join([dir, "launch", name])
 
-    case File.read(path) do
-      {:ok, text} -> {:ok, String.split(text, "\n", trim: true)}
+    with {:ok, text} <- File.read(path), true <- String.valid?(text) do
+      {:ok, text}
+    else
+      false -> {:error, "#{path} must contain UTF-8 text"}
       {:error, _} -> {:error, "#{dir} is not a complete runtime (no #{path})"}
     end
   end

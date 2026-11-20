@@ -7,7 +7,7 @@ defmodule Kettlecorn.Runtime do
   manifest and `launch/` files. Install the matching runtime with
   `mix kettlecorn.install`; Python and the Wasmtime CLI are not required.
 
-  `dir/1` checks the `:runtime` option, `$KETTLECORN_RUNTIME`,
+  `find/1` checks the `:runtime` option, `$KETTLECORN_RUNTIME`,
   `config :kettlecorn, :runtime`, then `installed_dir/0`.
   With Nix, `nix build .#runtime` builds the runtime.
 
@@ -39,36 +39,88 @@ defmodule Kettlecorn.Runtime do
   """
   @spec installed_dir() :: Path.t()
   def installed_dir,
-    do: :user_cache |> :filename.basedir(~c"kettlecorn/runtime-#{@version}") |> to_string()
+    do:
+      :user_cache
+      |> :filename.basedir(~c"kettlecorn/runtime-#{@version}")
+      |> to_string()
+      |> Path.expand()
 
   @doc """
-  The runtime directory to use (see the module docs), or `nil` when there is
-  none.
+  Returns the configured path, or the cache path if it contains a regular
+  `manifest.json`. Returns `nil` otherwise. Use `find/1` to load and validate
+  the selected runtime.
   """
   @spec dir(keyword()) :: Path.t() | nil
   def dir(opts \\ []) do
-    configured =
-      opts[:runtime] || env("KETTLECORN_RUNTIME") ||
-        Application.get_env(:kettlecorn, :runtime)
-
-    cond do
-      configured -> Path.expand(configured)
-      File.regular?(Path.join(installed_dir(), "manifest.json")) -> installed_dir()
-      true -> nil
+    case select(opts) do
+      {:configured, path} -> path
+      {:installed, path} -> if File.regular?(Path.join(path, "manifest.json")), do: path
     end
   end
 
-  @doc "Finds and loads a runtime using the discovery order of `dir/1`."
+  @doc """
+  Finds and loads the selected runtime. A runtime from the user cache must
+  match this library's release version.
+  """
   @spec find(keyword()) :: {:ok, t()} | {:error, String.t()}
   def find(opts) do
-    case dir(opts) do
-      nil ->
-        {:error,
-         "No Kettlecorn runtime found: run `mix kettlecorn.install`, " <>
-           "or set :runtime / KETTLECORN_RUNTIME"}
+    case select(opts) do
+      {:configured, path} ->
+        load(path)
 
-      dir ->
-        load(dir)
+      {:installed, path} ->
+        case lookup_cache(path) do
+          :missing ->
+            {:error,
+             "No Kettlecorn runtime found: run `mix kettlecorn.install`, " <>
+               "or set :runtime / KETTLECORN_RUNTIME"}
+
+          result ->
+            result
+        end
+    end
+  end
+
+  defp select(opts) do
+    path =
+      opts[:runtime] || env("KETTLECORN_RUNTIME") || Application.get_env(:kettlecorn, :runtime)
+
+    if path do
+      {:configured, Path.expand(path)}
+    else
+      {:installed, installed_dir()}
+    end
+  end
+
+  @doc false
+  @spec lookup_cache(Path.t()) :: :missing | {:ok, t()} | {:error, String.t()}
+  def lookup_cache(dir) do
+    dir = Path.expand(dir)
+
+    case File.lstat(dir) do
+      {:error, :enoent} ->
+        :missing
+
+      {:ok, _} ->
+        load_release(dir)
+
+      {:error, reason} ->
+        {:error, "cannot inspect #{dir}: #{:file.format_error(reason)}"}
+    end
+  end
+
+  @doc false
+  @spec load_release(Path.t()) :: {:ok, t()} | {:error, String.t()}
+  def load_release(dir) do
+    case load(dir) do
+      {:ok, %{manifest: %{kettlecorn: @version}}} = result ->
+        result
+
+      {:ok, %{manifest: %{kettlecorn: actual}}} ->
+        {:error, "expected Kettlecorn runtime version #{@version}, found #{actual}"}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -108,7 +160,7 @@ defmodule Kettlecorn.Runtime do
   end
 
   @doc """
-  Loads one generation of the runtime in `dir`, resolving its publication link.
+  Loads one generation of the runtime in `dir`, resolving all symlinks in its path.
   Requires its manifest, executable launcher and CLI, `launch/` files, emulators and
   `root/`. Checks the host platform and the library's protocol version.
   Both executables are required even when using only the host API.

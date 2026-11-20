@@ -28,34 +28,56 @@ defmodule Kettlecorn.Install do
   @doc """
   Downloads the release runtime for this version into `:dir` (default:
   `Kettlecorn.Runtime.installed_dir/0`). Reuses a compatible installation
-  unless `force: true`. Publication atomically replaces a symbolic link;
-  previous generations remain in `<dir>.versions` for existing readers.
-  Move an existing ordinary directory aside before replacing it, even with
-  `force: true`.
+  unless `force: true`. Concurrent first installs reuse the winning generation.
+  Forced reinstalls atomically replace the destination and keep previous
+  generations in `<dir>.versions` for existing readers.
+  Move an invalid cache symlink aside to repair it with an ordinary install.
+  Use `force: true` only at a destination you own. It authorizes overwriting
+  any non-directory entry at that path, including a regular file. Move an
+  existing ordinary directory aside before installing to that path.
   Returns `{:ok, dir}` or `{:error, message}`.
   """
   @spec runtime(keyword()) :: {:ok, Path.t()} | {:error, String.t()}
-  def runtime(opts \\ []) do
-    dir = opts[:dir] || Runtime.installed_dir()
+  def runtime(opts \\ []), do: install_runtime(opts, &fetch_release/1)
 
-    if match?({:ok, _}, Runtime.load(dir)) and !opts[:force] do
-      {:ok, dir}
-    else
-      with {:ok, name} <- archive_name(),
-           {:ok, archive} <- fetch_verified(name, url(name)),
-           :ok <- unpack_runtime(archive, dir) do
-        {:ok, dir}
-      end
+  if Mix.env() == :test do
+    @doc false
+    def runtime(opts, fetch), do: install_runtime(opts, fetch)
+  end
+
+  defp install_runtime(opts, fetch) do
+    dir = opts[:dir] || Runtime.installed_dir()
+    if opts[:force] == true, do: install(dir, true, fetch), else: install_if_missing(dir, fetch)
+  end
+
+  defp install_if_missing(dir, fetch) do
+    case Runtime.lookup_cache(dir) do
+      :missing -> install(dir, false, fetch)
+      result -> with :ok <- reuse(result, dir), do: {:ok, dir}
     end
   end
 
-  # The archive holds one top-level runtime directory.
-  # It replaces `dir` only once it has passed the version handshake.
-  defp unpack_runtime(archive, dir) do
+  defp reuse({:ok, _}, _dir), do: :ok
+
+  defp reuse({:error, reason}, dir),
+    do: {:error, "#{reason}. Move #{dir} aside before installing."}
+
+  defp reuse(:missing, dir), do: {:error, "#{dir} disappeared during installation"}
+
+  defp install(dir, force, fetch) do
+    with {:ok, name} <- archive_name(),
+         {:ok, archive, expected} <- fetch.(name),
+         :ok <- verify(archive, name, expected),
+         :ok <- unpack_runtime(archive, dir, force) do
+      {:ok, dir}
+    end
+  end
+
+  defp unpack_runtime(archive, dir, force) do
     build = fn staging ->
       with :ok <- extract(archive, staging),
            {:ok, [top]} <- File.ls(staging),
-           {:ok, _runtime} <- Runtime.load(Path.join(staging, top)) do
+           {:ok, _runtime} <- Runtime.load_release(Path.join(staging, top)) do
         {:ok, Path.join(staging, top)}
       else
         {:ok, _entries} -> {:error, "runtime archive doesn't hold one runtime directory"}
@@ -63,7 +85,23 @@ defmodule Kettlecorn.Install do
       end
     end
 
-    Dir.replace(dir, build)
+    if force, do: Dir.replace(dir, build), else: publish(dir, build)
+  end
+
+  defp publish(dir, build) do
+    case Dir.create(dir, build) do
+      :ok ->
+        :ok
+
+      :occupied ->
+        dir |> Runtime.lookup_cache() |> reuse(dir)
+
+      {:error, reason} when is_atom(reason) ->
+        {:error, "cannot publish #{dir}: #{:file.format_error(reason)}"}
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp extract(archive, staging) do
@@ -73,11 +111,10 @@ defmodule Kettlecorn.Install do
     end
   end
 
-  defp fetch_verified(name, url) do
+  defp fetch_release(name) do
     with {:ok, expected} <- expected_checksum(name),
-         {:ok, archive} <- download(url),
-         :ok <- verify(archive, name, expected) do
-      {:ok, archive}
+         {:ok, archive} <- download(url(name)) do
+      {:ok, archive, expected}
     end
   end
 

@@ -32,4 +32,72 @@ defmodule Kettlecorn.RuntimeTest do
     assert Enum.any?(http, &String.starts_with?(&1, "wasi:http/client@"))
     assert plain -- http == []
   end
+
+  test "cached release validation checks identity and uses the launcher's emulator name",
+       %{tmp_dir: dir} do
+    runtime =
+      TestRuntime.fixture(Path.join(dir, "runtime"), %{
+        "kettlecorn" => Runtime.version(),
+        "tested_with" => %{"wasmtime" => "0.0.0"}
+      })
+
+    File.write!(Path.join(runtime, "launch/module"), "beam.wasm \r\n")
+    assert {:ok, _} = Runtime.load_release(runtime)
+
+    File.write!(Path.join(runtime, "launch/module"), "beam.wasm\nbeam-http.wasm")
+    assert {:error, message} = Runtime.load_release(runtime)
+    assert message =~ "doesn't name one emulator"
+
+    TestRuntime.fixture(runtime, %{"kettlecorn" => "0.0.0"})
+    assert {:error, message} = Runtime.load_release(runtime)
+    assert message =~ "expected Kettlecorn runtime version"
+  end
+
+  test "install verifies the digest and the staged release before publishing", %{tmp_dir: dir} do
+    runtime = TestRuntime.fixture(Path.join(dir, "source"), %{"kettlecorn" => "0.0.0"})
+
+    for name <- ["kettlecorn-launch", "kettlecorn-run"] do
+      path = Path.join([runtime, "bin", name])
+      File.rm!(path)
+      File.write!(path, "")
+      File.chmod!(path, 0o755)
+    end
+
+    archive = Path.join(dir, "runtime.tar.gz")
+    assert :ok = :erl_tar.create(~c"#{archive}", [{~c"runtime", ~c"#{runtime}"}], [:compressed])
+
+    destination = Path.join(dir, "installed")
+    bytes = File.read!(archive)
+    checksum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+
+    assert {:error, message} =
+             Kettlecorn.Install.runtime([dir: destination], fn _ ->
+               {:ok, bytes, "bad checksum"}
+             end)
+
+    assert message =~ "SHA-256 #{checksum}, expected bad checksum"
+    assert {:error, :enoent} = File.lstat(destination <> ".versions")
+
+    assert {:error, message} =
+             Kettlecorn.Install.runtime([dir: destination], fn _ -> {:ok, bytes, checksum} end)
+
+    assert message =~ "expected Kettlecorn runtime version"
+    assert {:error, :enoent} = File.lstat(destination)
+    assert File.ls!(destination <> ".versions") == []
+  end
+
+  test "install reports when the generation directory cannot be created", %{tmp_dir: dir} do
+    destination = Path.join(dir, "runtime")
+    generations = destination <> ".versions"
+    File.write!(generations, "occupied")
+    archive = "fixture"
+    checksum = :sha256 |> :crypto.hash(archive) |> Base.encode16(case: :lower)
+
+    assert {:error, "cannot create generation directory " <> detail} =
+             Kettlecorn.Install.runtime([dir: destination], fn _ -> {:ok, archive, checksum} end)
+
+    assert detail =~ generations
+    assert File.read!(generations) == "occupied"
+    assert {:error, :enoent} = File.lstat(destination)
+  end
 end

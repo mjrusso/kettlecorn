@@ -9,11 +9,15 @@ defmodule Mix.Tasks.Kettlecorn.Install do
       mix kettlecorn.install --force
       mix kettlecorn.install --dir runtime/
 
-  Installation atomically replaces a publication link; previous generations
-  remain available to readers that already resolved them.
-  `--dir` chooses the output path; `--force` downloads again even if a compatible
-  runtime is installed. Move an existing ordinary directory aside before
-  replacing it, even with `--force`.
+  `--dir` chooses the destination. By default, installation creates a symlink
+  only if the destination is absent and reuses a compatible runtime already there.
+  If the cache symlink is broken or points to an invalid runtime, move it aside
+  and retry, or use `--force` if you own the destination.
+
+  `--force` downloads the runtime again and can atomically replace any
+  non-directory entry at the destination, including a regular file.
+  Previous generations remain available to existing readers. Move an existing
+  ordinary directory aside before installing.
   """
   use Mix.Task
 

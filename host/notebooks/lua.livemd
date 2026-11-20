@@ -30,7 +30,7 @@ modules into the guest at startup; the guest does not fetch dependencies.
 Lua 1.0.2 has no additional production Hex dependencies or native code.
 
 ```elixir
-manifest = Kettlecorn.Runtime.load!(Kettlecorn.Runtime.dir()).manifest
+{:ok, %{manifest: manifest}} = Kettlecorn.Runtime.find([])
 guest_otp = manifest.otp |> String.split(".") |> hd()
 
 unless System.version() == manifest.elixir and System.otp_release() == guest_otp do

@@ -39,7 +39,9 @@ defmodule Kettlecorn.Cook do
     * `:build` (required) - the build's lib directory, e.g. `_build/prod/lib`.
     * `:out` (required) - output path. Cooking publishes a symbolic link and
       replaces it atomically on subsequent cooks; a failed cook preserves it.
-      Move an existing ordinary directory aside first. Previous copies stay in
+      Use a path you own. Cooking can overwrite any non-directory entry at
+      that path, including a regular file. Move an existing ordinary
+      directory aside first. Previous copies stay in
       `<out>.versions` until removed after their readers have finished.
     * `:config` - a config file to read into `sys.config`, e.g. `config/config.exs`.
     * `:env` - the Mix environment for `:config` (default `:prod`).
