@@ -3,6 +3,7 @@
 
 # Resolve the working tree's runtime only in recipes that use it.
 runtime := 'KETTLECORN_RUNTIME=$(nix build .#runtime --no-link --print-out-paths) || exit; export KETTLECORN_RUNTIME'
+extra_elixir := '../examples/apps/*/mix.exs $(find ../examples/rust -name target -prune -o -name "*.exs" -print) $(find ../guest/lib -name "*.ex")'
 
 default:
     @just --list
@@ -63,6 +64,10 @@ example name *args="--iex": (cook-example name)
 demo:
     {{runtime}} && cd host && mix run ../examples/host_demo.exs
 
+# Evaluate a greeting in an embedded VM.
+rust-hello-world:
+    @{{runtime}} && cargo run --quiet --locked --manifest-path examples/rust/hello-world/Cargo.toml --target-dir rust/target -- "$KETTLECORN_RUNTIME"
+
 # An IEx session with the host library, ready to start VMs.
 dev:
     {{runtime}} && cd host && iex -S mix
@@ -94,21 +99,23 @@ notebooks:
 # Rust/Nix/Elixir formatting, unused dependencies, Credo and Reach. Needs `just deps`.
 lint:
     cargo fmt --manifest-path rust/Cargo.toml -- --check
+    for manifest in examples/rust/*/Cargo.toml; do cargo fmt --manifest-path "$manifest" -- --check || exit; done
     nixpkgs-fmt --check flake.nix nix/*.nix
-    cd host && mix format --check-formatted && mix format --check-formatted ../examples/apps/*/mix.exs $(find ../guest/lib -name '*.ex')
+    cd host && mix format --check-formatted && mix format --check-formatted {{extra_elixir}}
     cd host && mix deps.unlock --check-unused && mix credo && mix reach.check --arch
     cmp LICENSE host/LICENSE  # the Hex package carries a copy
 
 # Clippy, Elixir compilation with warnings as errors, Dialyzer and compile-time cycles.
 typecheck:
     cargo clippy --manifest-path rust/Cargo.toml --features cli --all-targets -- -D warnings
+    for manifest in examples/rust/*/Cargo.toml; do cargo clippy --manifest-path "$manifest" --locked --target-dir rust/target --all-targets -- -D warnings || exit; done
     cd host && mix compile --force --warnings-as-errors
     cd host && mix dialyzer --format short
     cd host && mix xref graph --format cycles --label compile-connected --fail-above 0
 
 format:
     nixpkgs-fmt flake.nix nix/*.nix
-    cd host && mix format && mix format ../examples/apps/*/mix.exs $(find ../guest/lib -name '*.ex')
+    cd host && mix format && mix format {{extra_elixir}}
 
 # Benchmark startup and workloads (BENCH_TIME sets seconds per scenario).
 bench: bench-startup bench-workloads

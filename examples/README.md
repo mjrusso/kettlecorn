@@ -257,6 +257,25 @@ The [comparison notebook](../host/notebooks/lua.livemd) loads Lua directly
 from Livebook, runs the same transformation on the host and in the guest,
 and exposes a controlled host operation without cooking an app.
 
+## Rust projects
+
+Run the recipes in this section from the repository root inside `nix develop`.
+
+### Hello world
+
+[Hello world](rust/hello-world/) starts an embedded VM, evaluates a greeting,
+and shuts down.
+
+```sh
+just rust-hello-world
+```
+
+The executable takes a runtime directory. To use one you built or extracted:
+
+```sh
+cargo run --locked --manifest-path examples/rust/hello-world/Cargo.toml -- /path/to/runtime
+```
+
 ## From a host program: [`host_demo.exs`](host_demo.exs)
 
 Inside `nix develop`, run:
