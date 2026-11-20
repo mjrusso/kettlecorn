@@ -91,7 +91,7 @@ document the input and owner-event budgets.
 
 ## Rust execution API
 
-`launcher/` contains an internal, unstable Rust library plus a thin binary.
+`rust/` contains an internal, unstable Rust library plus a thin binary.
 The library configures the engine, loads `launch/` files, applies grants and
 limits, manages the native compilation cache, and runs a guest over supplied byte
 streams. It includes bounded in-memory streams for embedding. The binary owns fd
@@ -355,7 +355,7 @@ Every runtime's `manifest.json` records:
   `beam-http.wasm` adds `wasi:http` at 0.3.0 (from wasmtime's WIT files);
 - `tested_with`: the Wasmtime version the checks ran against. The runtime needs
   component-model async and threading.
-  The native launcher embeds the version pinned in `launcher/Cargo.toml`;
+  The native launcher embeds the version pinned in `rust/Cargo.toml`;
   `platform` selects its OS and CPU.
 
 The runtime and the guest application's version both come from `host/VERSION`.

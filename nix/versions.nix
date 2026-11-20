@@ -17,7 +17,7 @@ writeText "versions.md" ''
   | Elixir | ${elixirVersion} | flake input `elixir` |
   | Popcorn | ${pinned popcorn} | flake input `popcorn` (main) |
   | wasi-libc | ${pinned wasi-libc} | flake input `wasi-libc` |
-  | wasmtime | ${wasmtimeVersion} | `launcher/Cargo.toml` |
+  | wasmtime | ${wasmtimeVersion} | `rust/Cargo.toml` |
   | Rust (launcher) | ${rustc.version} | nixpkgs |
   | LLVM (clang, lld, compiler-rt) | ${llvm.release_version} | nixpkgs |
   | OpenSSL | ${openssl.version} | nixpkgs |

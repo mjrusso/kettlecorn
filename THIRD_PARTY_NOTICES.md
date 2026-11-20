@@ -5,9 +5,9 @@ Kettlecorn is licensed under the [Apache License 2.0](LICENSE).
 ## In this repository
 
 The Nix build fetches third-party sources using pinned flake inputs
-(`flake.lock`), nixpkgs, `launcher/Cargo.lock`, `guest/hex/mix.lock`, and
+(`flake.lock`), nixpkgs, `rust/Cargo.lock`, `guest/hex/mix.lock`, and
 `host/mix.lock`.
-Wasmtime's WIT files and license come from the version in `launcher/Cargo.toml`,
+Wasmtime's WIT files and license come from the version in `rust/Cargo.toml`,
 with a source hash in `flake.nix`.
 The files below reference or modify those sources:
 
@@ -42,8 +42,8 @@ directory. Distribute that directory with the runtime.
 
 The native launcher embeds [Wasmtime](https://github.com/bytecodealliance/wasmtime)
 (Apache-2.0 WITH LLVM-exception) and its locked Rust dependencies
-(`launcher/Cargo.lock`). Their license and notice information is included under
-`licenses/launcher/<crate>/`. Wasmtime is part of each platform runtime archive.
+(`rust/Cargo.lock`). Their license and notice information is included under
+`licenses/rust/<crate>/`. Wasmtime is part of each platform runtime archive.
 
 A cooked application (`Kettlecorn.Cook`) adds that application's
 dependencies to the guest. Their licenses are the cooking project's

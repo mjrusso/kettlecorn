@@ -13,4 +13,4 @@ release
 erl_crash.dump
 _kettlecorn
 _kettlecorn.versions/
-launcher/target/
+rust/target/

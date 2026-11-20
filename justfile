@@ -93,7 +93,7 @@ notebooks:
 
 # Rust/Nix/Elixir formatting, unused dependencies, Credo and Reach. Needs `just deps`.
 lint:
-    cargo fmt --manifest-path launcher/Cargo.toml -- --check
+    cargo fmt --manifest-path rust/Cargo.toml -- --check
     nixpkgs-fmt --check flake.nix nix/*.nix
     cd host && mix format --check-formatted && mix format --check-formatted ../examples/apps/*/mix.exs $(find ../guest/lib -name '*.ex')
     cd host && mix deps.unlock --check-unused && mix credo && mix reach.check --arch
@@ -101,7 +101,7 @@ lint:
 
 # Clippy, Elixir compilation with warnings as errors, Dialyzer and compile-time cycles.
 typecheck:
-    cargo clippy --manifest-path launcher/Cargo.toml --all-targets -- -D warnings
+    cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
     cd host && mix compile --force --warnings-as-errors
     cd host && mix dialyzer --format short
     cd host && mix xref graph --format cycles --label compile-connected --fail-above 0

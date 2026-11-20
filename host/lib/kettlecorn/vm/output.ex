@@ -1,7 +1,7 @@
 defmodule Kettlecorn.VM.Output do
   @moduledoc false
 
-  # Must agree with OUTPUT_PACKET_BYTES in launcher/src/fd.rs.
+  # Must agree with OUTPUT_PACKET_BYTES in rust/src/fd.rs.
   @packet_bytes 65_536
 
   @enforce_keys [:dir]

@@ -19,7 +19,7 @@ LLVM, Erlang, and Elixir come from the NixOS binary cache.
 Wasmtime's source is fetched for its WIT files and license.
 
 Changes to `patches/otp/`, C build inputs, `nix/otp.nix`, `nix/toolchain.nix`,
-the Wasmtime source pin in `launcher/Cargo.toml` and `flake.nix`, or pinned
+the Wasmtime source pin in `rust/Cargo.toml` and `flake.nix`, or pinned
 inputs can rebuild OTP. The compatibility build includes C sources
 in `c/src/`, headers in `c/include/`, and the HTTP client's C, header, and WIT
 files. C documentation and native tests are excluded from that source set;
@@ -62,7 +62,7 @@ patches/otp/           OTP hooks applied after Popcorn's patches
 c/                     emulator compatibility code, NIFs, and OTP replacements
 guest/                 guest application and Hex dependency definitions
 host/                  host library, tests, guides, and notebooks
-launcher/              Rust execution library and native launcher
+rust/              Rust execution library and native launcher
 bin/kettlecorn-run     script and IEx entrypoint
 tests/cli/             CLI integration tests
 examples/              scripts and cooked Mix applications
@@ -88,7 +88,7 @@ just docs
 ExSlop and ExDNA, and the host's architecture rules. `typecheck` compiles
 Elixir with warnings as errors, runs Clippy and Dialyzer, and rejects
 compile-time cycles. Use `just format` for Nix and Elixir, and
-`cargo fmt --manifest-path launcher/Cargo.toml` for Rust.
+`cargo fmt --manifest-path rust/Cargo.toml` for Rust.
 
 `just notebooks` runs each notebook's cells against the local runtime. It
 skips the two setup cells that install the published package and runtime.
@@ -178,7 +178,7 @@ The runtime licenses and generated versions table use those selections.
 
 Everything is pinned: flake inputs in `flake.lock`, the rest by the pinned
 nixpkgs. Wasmtime's version comes from the launcher's dependency pin in
-`launcher/Cargo.toml`; `flake.nix` pins the matching source hash for WIT and LICENSE.
+`rust/Cargo.toml`; `flake.nix` pins the matching source hash for WIT and LICENSE.
 Elixir comes from the `elixir` flake input (an Elixir release tag),
 built with nixpkgs' Elixir builder. The same Elixir compiles the guest code
 (Elixir's own applications, Req, cooked apps) and runs the host library. The
@@ -193,7 +193,7 @@ host Erlang's.
 | Elixir | 1.20.5 | flake input `elixir` |
 | Popcorn | `55e87e7` (2026-11-10) | flake input `popcorn` (main) |
 | wasi-libc | `c3a02dc` (2026-11-10) | flake input `wasi-libc` |
-| wasmtime | 50.0.2 | `launcher/Cargo.toml` |
+| wasmtime | 50.0.2 | `rust/Cargo.toml` |
 | Rust (launcher) | 1.99.1 | nixpkgs |
 | LLVM (clang, lld, compiler-rt) | 23.1.3 | nixpkgs |
 | OpenSSL | 3.5.9 | nixpkgs |
@@ -206,8 +206,8 @@ to Popcorn's latest commit, and `just update` updates every input. Each one
 rewrites this table; run `nix flake check` afterwards, because a new Popcorn
 or OTP can make a patch stop applying.
 
-To update Wasmtime, edit the three exact `=` pins in `launcher/Cargo.toml`,
-run `cargo update --manifest-path launcher/Cargo.toml -p wasmtime`, refresh
+To update Wasmtime, edit the three exact `=` pins in `rust/Cargo.toml`,
+run `cargo update --manifest-path rust/Cargo.toml -p wasmtime`, refresh
 the source hash in `flake.nix`, run `just docs-versions`, then run
 `nix flake check`. Keep the version in the fetched source's name so a stale
 hash cannot reuse another release's source tree.
@@ -263,7 +263,7 @@ The macOS build rewrites the library path and signs the launcher after fixup so
 release archives run without Nix. `nix flake check` runs cache
 unit tests and the library's in-process guest tests, in addition to the host
 suite. For a local Rust test run, set `KETTLECORN_TEST_RUNTIME` to a built runtime
-and run `cargo test --release --manifest-path launcher/Cargo.toml`.
+and run `cargo test --release --manifest-path rust/Cargo.toml`.
 
 See [Rust execution API](architecture.md#rust-execution-api) for preparation,
 execution, and cancellation contracts.

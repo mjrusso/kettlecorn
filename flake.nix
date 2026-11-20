@@ -64,7 +64,7 @@
         });
         inherit (beamPackages) erlang;
         elixirPkg = beamPackages.elixir;
-        launcherCargo = builtins.fromTOML (builtins.readFile ./launcher/Cargo.toml);
+        launcherCargo = builtins.fromTOML (builtins.readFile ./rust/Cargo.toml);
         wasmtimeVersion = lib.removePrefix "=" launcherCargo.dependencies.wasmtime.version;
         wasmtimeSrc = pkgs.fetchFromGitHub {
           name = "wasmtime-${wasmtimeVersion}-source";

@@ -1,14 +1,14 @@
 { lib, stdenv, rustPlatform, pkg-config, cmake, perl, libiconv, darwin }:
 let
-  cargo = builtins.fromTOML (builtins.readFile ../launcher/Cargo.toml);
+  cargo = builtins.fromTOML (builtins.readFile ../rust/Cargo.toml);
 in
 assert lib.all (name: cargo.dependencies.${name}.version == cargo.dependencies.wasmtime.version)
   [ "wasmtime-wasi" "wasmtime-wasi-http" ];
 rustPlatform.buildRustPackage {
   pname = "kettlecorn-launcher";
   version = cargo.package.version;
-  src = lib.cleanSource ../launcher;
-  cargoLock.lockFile = ../launcher/Cargo.lock;
+  src = lib.cleanSource ../rust;
+  cargoLock.lockFile = ../rust/Cargo.lock;
   nativeBuildInputs = [ pkg-config cmake perl ]
     ++ lib.optionals stdenv.hostPlatform.isDarwin [ darwin.autoSignDarwinBinariesHook ];
   doCheck = true;
@@ -17,7 +17,7 @@ rustPlatform.buildRustPackage {
     mkdir -p $out/share/licenses/kettlecorn-launcher
     for crate in $cargoDeps/*; do
       [ -d "$crate" ] || continue
-      dest=$out/share/licenses/kettlecorn-launcher/$(basename "$crate")
+      dest=$out/share/licenses/kettlecorn-rust/$(basename "$crate")
       mkdir -p "$dest"
       find -L "$crate" -maxdepth 2 -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) -exec cp --backup=numbered '{}' "$dest/" \;
       [ -n "$(ls -A "$dest")" ] || cp "$crate/Cargo.toml" "$dest/"

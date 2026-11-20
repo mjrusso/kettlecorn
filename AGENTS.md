@@ -8,7 +8,7 @@ Use Conventional Commits with the area as the scope, for example
 `feat(guest): add Kettlecorn.HTTP` or `fix(run): start apps before IEx`.
 Scopes: `nix` (flake.nix, nix/), `otp` (patches/otp), `c` (the compat layer),
 `guest` (guest/), `host` (host/), `run` (bin/kettlecorn-run), `examples`,
-`docs`, `launcher` (launcher/). Use `ci` for GitHub Actions and `chore` for
+`docs`, `launcher` (rust/). Use `ci` for GitHub Actions and `chore` for
 repository tooling. Keep each commit focused on one area.
 
 ## Development documentation
@@ -28,7 +28,7 @@ entered from: enter it from this directory. `just deps` installs Hex,
 fetches the host library's dev dependencies and builds the runtime. Configure
 the binary cache before building. Changes to `patches/otp/`, C build
 inputs, `nix/otp.nix`, `nix/toolchain.nix`, the Wasmtime source pin in
-`launcher/Cargo.toml` and `flake.nix`, or pinned inputs can rebuild OTP.
+`rust/Cargo.toml` and `flake.nix`, or pinned inputs can rebuild OTP.
 The compatibility build excludes C documentation, native tests, and the OTP
 integration files; `nix/otp.nix` depends on the integration files separately.
 
@@ -58,7 +58,7 @@ Before finishing a change, run:
 
 Fix every failure. Keep Credo and duplication findings at zero; fix findings
 rather than weakening `.credo.exs`. `just format` formats Nix and Elixir;
-`cargo fmt --manifest-path launcher/Cargo.toml` formats Rust. `just docs` builds
+`cargo fmt --manifest-path rust/Cargo.toml` formats Rust. `just docs` builds
 the host library's documentation (ExDoc), rejects warnings, and checks local
 HTML links. Run it after documentation changes.
 
@@ -116,7 +116,7 @@ pull request.
 - Guest arguments and environment are defined in `nix/runtime.nix` and written
   to the runtime's `launch/` files. The Rust library reads them for both host
   VMs and `bin/kettlecorn-run`. Engine configuration and grants are implemented
-  in `launcher/`. Keep the `-Mea min` emulator flag (plain `malloc`): ERTS's
+  in `rust/`. Keep the `-Mea min` emulator flag (plain `malloc`): ERTS's
   allocators fragment WebAssembly memory, and a host integration test catches
   that. Cooked applications are copied to `/app`; `Kettlecorn.Boot` loads
   their code and configuration.
@@ -140,15 +140,15 @@ change: the library refuses runtimes with another one.
 
 - Versions come from the flake inputs (Popcorn tracks main; OTP, Elixir and
   wasi-libc are pinned to a tag or commit in `flake.nix`), nixpkgs, and the
-  Wasmtime dependency pin in `launcher/Cargo.toml`. The
+  Wasmtime dependency pin in `rust/Cargo.toml`. The
   development guide's versions table is generated (`just docs-versions`), and
   `nix flake check` fails when it's stale.
 - `just update-elixir` (latest Elixir release), `just update-popcorn`
   (Popcorn's latest commit), `just update` (every input). Run
   `nix flake check` after each. A new OTP release must match the host Erlang
   in nixpkgs, and every patch must still apply.
-- To update Wasmtime, edit the three exact `=` pins in `launcher/Cargo.toml`,
-  run `cargo update --manifest-path launcher/Cargo.toml -p wasmtime`, refresh
+- To update Wasmtime, edit the three exact `=` pins in `rust/Cargo.toml`,
+  run `cargo update --manifest-path rust/Cargo.toml -p wasmtime`, refresh
   the source hash in `flake.nix`, run `just docs-versions`, then run
   `nix flake check`. Keep the version in the fetched source's name so a stale
   hash cannot reuse another release's source tree.
