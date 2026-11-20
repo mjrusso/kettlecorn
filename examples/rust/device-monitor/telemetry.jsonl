@@ -1,0 +1,13 @@
+{"type":"sample","device":"north","temperature":50}
+{"type":"sample","device":"south","temperature":82}
+{"type":"sample","device":"north","temperature":70}
+{"type":"sample","device":"north","temperature":81}
+{"type":"sample","device":"south","temperature":84}
+{"type":"sample","device":"north","temperature":83}
+{"type":"crash","device":"north"}
+{"type":"sample","device":"south","temperature":86}
+{"type":"sample","device":"north","temperature":99}
+{"type":"sample","device":"north","temperature":100}
+{"type":"sample","device":"north","temperature":101}
+{"type":"sample","device":"south","temperature":70}
+{"type":"sample","device":"north","temperature":74}

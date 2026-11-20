@@ -1,0 +1,7 @@
+{"plugin":"rapid_rise","device":"north","kind":"rapid_rise","temperature":70}
+{"plugin":"sustained_heat","device":"north","kind":"worker_restarted"}
+{"plugin":"sustained_heat","device":"south","kind":"high","temperature":86}
+{"plugin":"rapid_rise","device":"north","kind":"rapid_rise","temperature":99}
+{"plugin":"sustained_heat","device":"north","kind":"high","temperature":101}
+{"plugin":"sustained_heat","device":"south","kind":"recovered","temperature":70}
+{"plugin":"sustained_heat","device":"north","kind":"recovered","temperature":74}

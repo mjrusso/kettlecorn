@@ -276,6 +276,66 @@ The executable takes a runtime directory. To use one you built or extracted:
 cargo run --locked --manifest-path examples/rust/hello-world/Cargo.toml -- /path/to/runtime
 ```
 
+### Device monitor
+
+The [device monitor](rust/device-monitor/) is a Rust app that runs Elixir monitoring
+plugins. Rust reads newline-delimited JSON sensor events and starts a long-lived
+BEAM VM for each plugin. Rust evaluates each plugin once at startup, then
+uses `Vm::call` to dispatch events to a registered guest process. The plugins
+own their device state and alert rules.
+The monitor writes one JSON alert per line to stdout and forwards plugin
+stdout to stderr.
+
+Run the bundled demo:
+
+```sh
+just device-monitor
+```
+
+To run with your own telemetry or plugins, build the bundle and pass the file
+paths to the executable:
+
+```sh
+nix build --accept-flake-config .#rust-device-monitor -o result-rust-device-monitor
+bundle=./result-rust-device-monitor
+"$bundle/bin/device-monitor" "$bundle/telemetry.jsonl" \
+  "$bundle/plugins/sustained_heat.exs" "$bundle/plugins/rapid_rise.exs"
+```
+
+[Sustained heat](rust/device-monitor/plugins/sustained_heat.exs) supervises a
+`GenServer` per device. It alerts after three consecutive readings of 80 or
+higher and reports recovery when the temperature drops below 80.
+[Rapid rise](rust/device-monitor/plugins/rapid_rise.exs) tracks each device's last
+reading and alerts on a jump of 15 or more.
+
+In the [fixture](rust/device-monitor/telemetry.jsonl), rapid rise alerts on the
+north device at 70. A simulated crash then restarts north's sustained-heat
+worker. South still alerts on its third high reading, and rapid rise still
+remembers north's last reading. North's restarted worker requires three new
+high readings. See the [expected JSON output](rust/device-monitor/expected.jsonl).
+
+Pass one or more plugin files to load your own policies. Each `.exs` file
+defines `MonitorPlugin.start/0` and `MonitorPlugin.handle_event/1`, both
+returning `:ok`. The monitor sends each event to every plugin. Events use
+string keys. A `"sample"` event has `"type" => "sample"`, a `"device"`, and an
+integer `"temperature"`. The bundled telemetry also includes a `"crash"`
+event with a `"device"`. Plugins that use the bundled telemetry must handle
+this event. A plugin that ignores crashes can return `:ok` immediately.
+A plugin emits an alert with `Kettlecorn.Host.call("emit_alert", fields)`,
+where `fields` uses the string keys `"device"`, `"kind"`, and optionally
+`"temperature"`. An async Rust callback adds the plugin's filename stem
+and writes the alert.
+
+The executable loads the runtime relative to itself. Copy the bundle to run
+it on another machine on the same platform:
+
+```sh
+cp -RL result-rust-device-monitor device-monitor-bundle
+```
+
+The bundle includes the matching platform runtime. The destination machine
+can run it without Nix, Cargo, or a host BEAM installation.
+
 ## From a host program: [`host_demo.exs`](host_demo.exs)
 
 Inside `nix develop`, run:

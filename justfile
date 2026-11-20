@@ -68,6 +68,12 @@ demo:
 rust-hello-world:
     @{{runtime}} && cargo run --quiet --locked --manifest-path examples/rust/hello-world/Cargo.toml --target-dir rust/target -- "$KETTLECORN_RUNTIME"
 
+# Run the Rust device monitor with its bundled telemetry and plugins.
+device-monitor:
+    @bundle=$(nix build .#rust-device-monitor --no-link --print-out-paths) && \
+      "$bundle/bin/device-monitor" "$bundle/telemetry.jsonl" \
+        "$bundle/plugins/sustained_heat.exs" "$bundle/plugins/rapid_rise.exs"
+
 # An IEx session with the host library, ready to start VMs.
 dev:
     {{runtime}} && cd host && iex -S mix

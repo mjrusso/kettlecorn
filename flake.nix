@@ -135,6 +135,10 @@
           inherit runtime version system;
         };
 
+        rust-device-monitor = launcherPackages.callPackage ./nix/rust-device-monitor.nix {
+          inherit release;
+        };
+
         versionsDoc = ./host/guides/development.md;
         versions = pkgs.callPackage ./nix/versions.nix {
           inherit erlang elixirVersion popcorn wasi-libc wasmtimeVersion openssl nixpkgs;
@@ -179,7 +183,7 @@
       {
         packages = {
           default = runtime;
-          inherit runtime kettlecorn-run guestDeps openssl versions release launcher;
+          inherit runtime kettlecorn-run guestDeps openssl versions release launcher rust-device-monitor;
           otp = otpWasi;
           inherit (toolchain) resourceDir sysroot compat cc;
         };
@@ -193,6 +197,8 @@
             '';
           };
         };
+
+        checks.rust-device-monitor = rust-device-monitor;
 
         checks.protocol-version = pkgs.runCommand "kettlecorn-protocol-version" { } ''
           rust_version=$(sed -nE 's/^pub\(crate\) const VERSION: u32 = ([0-9]+);$/\1/p' ${./rust/src/protocol/mod.rs})
