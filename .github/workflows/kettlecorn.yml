@@ -42,6 +42,7 @@ jobs:
           if grep -q /nix/store/ launcher-links.txt; then exit 1; fi
           script=$(find extracted-runtime -name kettlecorn-run -type f)
           env -u KETTLECORN_RUNTIME "$script" -e 'IO.puts("archive booted")'
+          nix develop .#ci -c just test-runtime-cache release/*.tar.gz
 
   checks:
     name: lint, typecheck and docs
@@ -66,6 +67,10 @@ jobs:
           restore-keys: mix-kettlecorn-${{ runner.os }}-otp29-elixir1.20-
       - run: nix develop .#ci -c sh -c 'cd host && mix local.hex --if-missing --force && mix deps.get'
       - run: nix develop .#ci -c just lint typecheck docs
+      - name: Check the Linux runtime cache handoff
+        run: |
+          nix build .#release -o release
+          nix develop .#ci -c just test-runtime-cache release/*.tar.gz
       - run: nix develop .#ci -c just test-rust-examples
 
   release-archives:
