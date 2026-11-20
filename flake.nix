@@ -159,6 +159,7 @@
           cargo
           rustfmt
           clippy
+          pkg-config
         ];
 
         devPackages = [
@@ -169,6 +170,16 @@
         env = {
           LANG = "C.UTF-8";
           ERL_AFLAGS = "-kernel shell_history enabled";
+        } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          PULSE_FIELD_LIBRARIES = lib.makeLibraryPath (with pkgs; [
+            libglvnd
+            libx11
+            libxcursor
+            libxi
+            libxrandr
+            libxkbcommon
+            wayland
+          ]);
         };
 
         shellHook = ''

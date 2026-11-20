@@ -74,6 +74,19 @@ device-monitor:
       "$bundle/bin/device-monitor" "$bundle/telemetry.jsonl" \
         "$bundle/plugins/sustained_heat.exs" "$bundle/plugins/rapid_rise.exs"
 
+# Open Pulse Field with a preset or an Elixir script path.
+pulse-field setup="cover":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{quote(setup)}} in
+      -h|--help) ;;
+      *) {{runtime}} ;;
+    esac
+    if [ -n "${PULSE_FIELD_LIBRARIES:-}" ]; then
+      export LD_LIBRARY_PATH="$PULSE_FIELD_LIBRARIES${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+    cargo run --quiet --locked --manifest-path examples/rust/pulse-field/Cargo.toml --target-dir rust/target -- "${KETTLECORN_RUNTIME:-}" {{quote(setup)}}
+
 # An IEx session with the host library, ready to start VMs.
 dev:
     {{runtime}} && cd host && iex -S mix
@@ -97,6 +110,11 @@ test-apps: build-examples
 
 test-stdio:
     python3 c/test/stdio_test.py
+
+test-rust-examples: test-pulse-field
+
+test-pulse-field:
+    {{runtime}} && KETTLECORN_TEST_RUNTIME="$KETTLECORN_RUNTIME" cargo test --locked --manifest-path examples/rust/pulse-field/Cargo.toml --target-dir rust/target
 
 # Runs every notebook's cells (host/notebooks) against the runtime.
 notebooks:
@@ -162,7 +180,7 @@ cache-push:
     cachix watch-exec kettlecorn -- sh -c 'nix flake check --accept-flake-config && nix build --accept-flake-config --no-link .#release && nix develop --accept-flake-config -c true'
 
 # CI checks that run outside `nix flake check`.
-ci: lint typecheck docs test-apps
+ci: lint typecheck docs test-apps test-rust-examples
 
 # Install Hex, fetch host development dependencies, and build the runtime.
 deps:

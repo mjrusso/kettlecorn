@@ -66,6 +66,7 @@ jobs:
           restore-keys: mix-kettlecorn-${{ runner.os }}-otp29-elixir1.20-
       - run: nix develop .#ci -c sh -c 'cd host && mix local.hex --if-missing --force && mix deps.get'
       - run: nix develop .#ci -c just lint typecheck docs
+      - run: nix develop .#ci -c just test-rust-examples
 
   release-archives:
     name: Runtime archive (${{ matrix.os }})

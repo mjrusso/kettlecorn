@@ -336,6 +336,148 @@ cp -RL result-rust-device-monitor device-monitor-bundle
 The bundle includes the matching platform runtime. The destination machine
 can run it without Nix, Cargo, or a host BEAM installation.
 
+### Pulse Field
+
+[Pulse Field](rust/pulse-field/) visualizes BEAM workers moving around a grid
+and sending messages. Numbered rings and trails show each worker's movement.
+Lines between workers show messages. Rust moves the gold pulses.
+
+```sh
+just pulse-field cover
+just pulse-field relay
+just pulse-field mirrors
+just pulse-field prism
+just pulse-field sierpinski
+```
+
+`just pulse-field` opens Cover by default. The executable embeds the preset
+scripts. Pass an `.exs` path to load a script from disk and pick up edits when
+you press **R**. Run `just -- pulse-field --help` to list the presets.
+
+Choose **Fixed lanes**, **Sweep**, or **Orbit** and one to four automatic
+emitters. Fixed emitters stay in place, sweeping emitters slide along their
+edges, and orbiting emitters travel around the perimeter. They share one firing
+clock and take turns. Choose **Manual only** to turn off automatic fire.
+
+Click a grid cell to select it and queue a burst from that cell. **Fire burst**
+queues another burst from the selected cell. Both use the direction and pulse
+count set under **Manual burst**. The first pulse appears on the next tick.
+
+**Space** pauses or resumes playback. **Right Arrow** pauses playback and
+advances one frame if the VM is ready. **R** reloads the script in a fresh VM,
+clears the canvas, and resumes playback. The selected pattern, emitter count,
+and manual burst settings carry over. The automatic sequence starts at tick one.
+
+Press **H** to hide or show the controls, or click **Hide controls** in the
+toolbar. Playback and reload shortcuts still work with the controls hidden.
+
+The status bar counts OTP processes directly linked to the Elixir session at
+the end of each frame. Workers started with `spawn_link` from `Bot.init/1` or
+`Bot.frame/2` count even if they draw only marks, like the Sierpiński row workers.
+
+#### Preset settings
+
+Each preset starts with the settings below. Change them under **Automatic fire**
+and press **R** to replay from the first frame with your changes.
+
+| Script | Pattern | Emitters | What to watch |
+| --- | --- | ---: | --- |
+| [`cover.exs`](rust/pulse-field/cover.exs) | Fixed lanes | 1 | Two workers take turns shielding the same lane. Look for `cover_me` and `in_position` as they swap. |
+| [`relay.exs`](rust/pulse-field/relay.exs) | Orbit | 4 | Four workers leave trails on square tracks. The first mirror handoff happens at frame 16. Watch for pulses reflecting off the raised mirror. |
+| [`mirrors.exs`](rust/pulse-field/mirrors.exs) | Orbit | 4 | Pulses bounce between cells. Violet marks show fixed mirrors reflecting a pulse, and pink marks show reflections from cells flipped by a neighbor. |
+| [`prism.exs`](rust/pulse-field/prism.exs) | Sweep | 4 | Pulses trace the outer square. To see the inner bands, fire a southbound burst from `(20, 8)` or `(20, 14)`. |
+| [`sierpinski.exs`](rust/pulse-field/sierpinski.exs) | Sweep | 4 | Sixteen row workers draw a Sierpiński triangle from the top down. Filled cells flash green when a pulse passes through. |
+
+The default [cover script](rust/pulse-field/cover.exs) starts two BEAM workers.
+Each worker has three shield charges and two health. A raised shield spends a
+charge to absorb a pulse. A pulse that reaches a worker with its shield down
+or depleted costs one health. Lowered shields recharge and workers exit at
+zero health. Arcs around the worker show charge and dots inside show health.
+
+At one charge, the worker covering a stream can send `:cover_me` to a ready
+teammate. The teammate moves into the stream, raises its shield, and replies
+`:in_position`. Labels on the message lines show both steps. The first worker
+then withdraws to recharge. Edit `@workers` to change the size of the team.
+
+**Try an earlier handoff.** Copy `cover.exs` and run `just pulse-field PATH`
+with the copy. Select **Fixed lanes** and one emitter, then watch the first
+handoff. Change `@help_at_charge` from `1` to `2`, save, and press **R** to
+replay the sequence. At `1`, the second absorbed pulse triggers the request.
+At `2`, the first absorbed pulse triggers it.
+
+#### Live-edit the Sierpiński triangle
+
+Copy the script and launch it by path so **R** picks up edits. Select **Sweep**
+and **4** emitters to match the preset.
+
+```sh
+cp examples/rust/pulse-field/sierpinski.exs /tmp/live-triangle.exs
+just pulse-field /tmp/live-triangle.exs
+```
+
+The `for` loop in `Bot.init/1` spawns one worker per row. Each worker uses
+`Bitwise.band(x, y) == x` to decide which cells to draw. Replace `init/1` with
+this version to draw four smaller triangles. Each triangle uses eight row
+workers, with successive triangles starting eight frames apart.
+
+```elixir
+def init(_board) do
+  for {cx, top, delay} <- [{10, 4, 0}, {30, 4, 8}, {10, 22, 16}, {30, 22, 24}],
+      y <- 0..7 do
+    board_y = top + y
+
+    pid =
+      spawn_link(fn ->
+        cells =
+          for x <- 0..y, Bitwise.band(x, y) == x do
+            {cx + 2 * x - y, board_y}
+          end
+
+        paint_row(cells, delay + 2 * y)
+      end)
+
+    {board_y, pid}
+  end
+end
+```
+
+Save and press **R**. All 32 workers start when the script loads. The delay
+controls when each worker starts painting its row.
+
+#### Script interface
+
+Each script defines:
+
+- `Bot.init(board)` receives a map with string keys `"size"` and `"center"`.
+  The size is the board's side length in cells. The center is an `{x, y}`
+  tuple. The function returns state that stays in Elixir and can contain PIDs.
+- `Bot.frame(view, state)` receives a map with string keys `"tick"`,
+  `"pulses"`, and `"emitters"`. Each pulse is `{id, {x, y}, {dx, dy}}`.
+  Its position is the cell it just entered. Each automatic emitter is
+  `{{x, y}, {dx, dy}}`. Coordinates start at zero in the upper left.
+  The function returns `{drawing, next_state}`.
+
+The drawing is a map with string keys `"turns"`, `"marks"`, `"actors"`,
+`"messages"`, and `"hits"`. Each value is a list, and omitted fields are empty.
+
+- A turn is `{pulse_id, {dx, dy}}` and changes the pulse's movement on the
+  next tick. Directions are one-cell cardinal or diagonal steps. A mark is
+  `{{x, y}, ink}`. Ink indices `0` through `3` are cyan, violet, pink, and green.
+- An actor is `{actor_id, {x, y}, ink, state}`. Use `nil` for a plain actor,
+  `:slash` or `:backslash` for a mirror, or `{:shield, raised?, charge, health}`
+  for a shield. Keep the actor's integer ID stable across frames so Rust can
+  draw a trail from its movement.
+- A message is `{sender_id, receiver_id, kind}`. Use `nil` for an unlabeled
+  line or `:cover_me` or `:in_position` to label it. The script sends the BEAM
+  message and the drawing records it. Rust draws the line when both the
+  sender and receiver are listed in that frame's `"actors"`.
+- A hit is `{pulse_id, ink, :shield | :damage}`. Rust removes that pulse and
+  draws a flash. If the frame includes both a turn and a hit for the same
+  pulse, the hit takes precedence.
+
+Each frame has a 500 ms guest call timeout. Marks fade over 72 ticks, and
+pulses expire after 240 ticks or when they leave the board.
+
 ## From a host program: [`host_demo.exs`](host_demo.exs)
 
 Inside `nix develop`, run:

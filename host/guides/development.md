@@ -61,14 +61,16 @@ nix/                   build stages
 patches/otp/           OTP hooks applied after Popcorn's patches
 c/                     emulator compatibility code, NIFs, and OTP replacements
 guest/                 guest application and Hex dependency definitions
-host/                  host library, tests, guides, and notebooks
-rust/              Rust execution library and native launcher
+host/                  Elixir host library, tests, guides, and notebooks
+rust/                  Kettlecorn Rust library and native launcher
 bin/kettlecorn-run     script and IEx entrypoint
 tests/cli/             CLI integration tests
-examples/              scripts and cooked Mix applications
+examples/              scripts and example applications
+  apps/                cooked Mix applications
+  rust/                standalone Rust projects
 PROTOCOL.md            host, guest, and launcher contracts
 AGENTS.md              coding-agent instructions and invariants
-RELEASING.md           runtime and Hex release procedure
+RELEASING.md           runtime, Hex, and crates.io release procedure
 LICENSE                Apache-2.0; third-party components have separate notices
 ```
 
@@ -110,8 +112,11 @@ build loop passes that path to its cooking helper. Listing recipes, linting,
 and formatting do not build the runtime.
 
 `nix flake check` runs the native C stdio tests, host tests and notebook cells
-in the Nix sandbox, excluding example app tests. It also checks the CLI
-(scripts, `-e`, and IEx) and the [generated versions table](#pinned-versions).
+in the Nix sandbox. It also checks the CLI (scripts, `-e`, and IEx) and the
+[generated versions table](#pinned-versions). It copies the device monitor
+bundle to a new directory and runs it there.
+It verifies that the Rust protocol version matches `host/PROTOCOL_VERSION`.
+The cooked Mix examples run separately with `just test-apps`.
 `nix/cli-tests.nix` runs the executable test harnesses in `tests/cli/`.
 The CLI and host checks include the platform's `ps` package in their sandbox
 inputs to verify process cleanup on Linux and macOS.
@@ -123,7 +128,9 @@ and checks local HTML links and fragments. It runs in CI on Linux.
 
 CI is [`.github/workflows/kettlecorn.yml`](https://github.com/mjrusso/kettlecorn/blob/main/.github/workflows/kettlecorn.yml):
 `nix flake check` and `just test-apps` on Linux and macOS, and `just lint typecheck docs`
-on Linux, on every push and pull request.
+and `just test-rust-examples` on Linux, on every push and pull request. The Rust
+example suite runs Pulse Field with the runtime from the current checkout and
+without a display. To run those tests directly, use `just test-pulse-field`.
 
 See [AGENTS.md](https://github.com/mjrusso/kettlecorn/blob/main/AGENTS.md)
 for code invariants and required validation when changing the project, and
@@ -207,8 +214,15 @@ rewrites this table; run `nix flake check` afterwards, because a new Popcorn
 or OTP can make a patch stop applying.
 
 To update Wasmtime, edit the three exact `=` pins in `rust/Cargo.toml`,
-run `cargo update --manifest-path rust/Cargo.toml -p wasmtime`, refresh
-the source hash in `flake.nix`, run `just docs-versions`, then run
+then refresh the lockfiles for the library and standalone Rust projects:
+
+```sh
+for manifest in rust/Cargo.toml examples/rust/*/Cargo.toml; do
+  cargo update --manifest-path "$manifest" -p wasmtime || exit
+done
+```
+
+Refresh the source hash in `flake.nix`, run `just docs-versions`, then run
 `nix flake check`. Keep the version in the fetched source's name so a stale
 hash cannot reuse another release's source tree.
 
@@ -263,7 +277,7 @@ The macOS build rewrites the library path and signs the launcher after fixup so
 release archives run without Nix. `nix flake check` runs cache
 unit tests and the library's in-process guest tests, in addition to the host
 suite. For a local Rust test run, set `KETTLECORN_TEST_RUNTIME` to a built runtime
-and run `cargo test --release --manifest-path rust/Cargo.toml`.
+and run `cargo test --release --manifest-path rust/Cargo.toml --features cli`.
 
 See [Rust execution API](architecture.md#rust-execution-api) for preparation,
 execution, and cancellation contracts.

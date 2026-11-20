@@ -1,0 +1,11 @@
+[package]
+name = "pulse-field"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+kettlecorn = { path = "../../../rust", default-features = false }
+tokio = { version = "1.51", features = ["macros", "rt", "sync"] }
