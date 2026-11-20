@@ -46,8 +46,17 @@ defmodule Kettlecorn.Proxy do
     :exit, {reason, _} -> {:error, {:exit, inspect(reason)}}
   end
 
-  defp reply(id, result),
-    do: Kettlecorn.Event.send(%{event: :proxy_reply, id: id, result: result})
+  defp reply(id, result) do
+    event = %{event: :proxy_reply, id: id, result: result}
+
+    case Kettlecorn.Event.send(event) do
+      :ok ->
+        :ok
+
+      {:error, :frame_too_large} ->
+        Kettlecorn.Event.send(%{event | result: {:error, :frame_too_large}})
+    end
+  end
 
   defp whereis(name) when is_binary(name) do
     GenServer.whereis(String.to_existing_atom(name))

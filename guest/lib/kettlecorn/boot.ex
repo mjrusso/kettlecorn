@@ -28,7 +28,7 @@ defmodule Kettlecorn.Boot do
     with :ok <- load_cacerts(),
          {:ok, entrypoint} <- cooked_app(),
          nil <- Enum.find_value(apps ++ entrypoint, &start_failure/1) do
-      Event.send(%{event: :boot_ready})
+      Event.send(%{event: :boot_ready, embedded_api: 1})
     else
       {step, reason} ->
         :io.format(:standard_error, "kettlecorn: ~ts failed: ~tp~n", [step, reason])

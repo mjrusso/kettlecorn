@@ -6,5 +6,5 @@ defmodule Kettlecorn.Event do
   @compile {:no_warn_undefined, :wasm}
 
   def send(fields),
-    do: :ok = :wasm.send_raw(:erlang.term_to_binary(Map.put(fields, :type, :kettlecorn)))
+    do: :wasm.send_envelope(Map.put(fields, :type, :kettlecorn))
 end

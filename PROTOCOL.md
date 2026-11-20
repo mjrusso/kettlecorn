@@ -35,6 +35,13 @@ payload. The VM sends a `fatal` frame and exits if a host frame exceeds
 splits the stream into frames itself so it can enforce `:max_message_size`
 (default 64 MiB) before allocating a guest frame.
 
+The embedded Rust client accepts guest frames up to 8 MiB. For frames larger
+than 8 MiB and up to 64 MiB, it reads and discards the remaining bytes in
+fixed-size chunks, then continues with the next frame. Truncated frames
+and lengths above 64 MiB stop the session. The Rust client sets
+`KETTLECORN_MAX_GUEST_FRAME_BYTES` so guest code can check the limit. The
+limit counts the type byte and payload.
+
 ## Native launcher output transport
 
 Host VMs pass `--output-socket PATH` to the native launcher. The path is in a
@@ -89,16 +96,33 @@ from its own `{:error, :timeout}`.
 containing an atom absent from the guest's atom table is rejected; the
 host receives no delivery error, and the guest call can time out.
 
+The Rust client reads routing fields independently of the argument value.
+If it can locate the argument term's boundary and read a valid reply token,
+it can reject an undecodable argument with a binary error reason. If the
+rejection queue is full, the guest call can time out.
+
+With an advertised frame limit, `Kettlecorn.Host.send/1` and
+`Kettlecorn.Host.call/3` return `{:error, :frame_too_large}` locally when
+an upper bound on the encoded envelope, plus the frame type byte, exceeds
+the frame limit. This size check can reject a term whose actual encoding would fit.
+When a limit is advertised, closures and native records are rejected with
+`{:error, :frame_too_large}` because the size check cannot traverse their contents.
+
 Kettlecorn events use a separate envelope,
-`%{type: :kettlecorn, event: event, ...}`, sent with `:wasm.send_raw/1`
+`%{type: :kettlecorn, event: event, ...}`, sent with `:wasm.send_envelope/1`
 (`Kettlecorn.Event`), so the host never looks inside a `vm_message`
 for them:
 
 | `event` | fields | sent by |
 |---|---|---|
-| `:boot_ready` | | `Kettlecorn.Boot`, once the applications have started |
+| `:boot_ready` | `embedded_api` | `Kettlecorn.Boot`, once the applications have started |
 | `:boot_failed` | | `Kettlecorn.Boot`; the reason goes to stderr and the VM exits |
 | `:proxy_reply` | `id`, `result` | `Kettlecorn.Proxy`, answering a call (see below) |
+
+The Rust client requires `embedded_api: 1` in `:boot_ready`. Version 1
+supports evaluation value limits. When a proxy reply exceeds the advertised
+frame limit, the proxy sends `{:error, :frame_too_large}` with the original
+request ID. The Elixir host and CLI check the shared protocol version.
 
 Guest envelopes use atom keys (`wasm.erl` builds them). The host uses string
 keys for proxy requests and evaluation options because
@@ -131,6 +155,9 @@ addresses a pid: `name` is the ETF of a pid or a `{pid, token}` tuple.
 For the tuple form, the delivered message is `{:wasm, {token, payload}}`;
 this routes host-call replies. The VM answers every `send` with a
 `send_result` frame carrying the same `id`.
+The Rust client sends host-call replies with ID 0 and ignores their
+`send_result` frames. Other requests use IDs from 1 through `u32::MAX`
+without reuse. Once those IDs are used, start a new VM to issue more requests.
 
 Guest PID handles on the host include the originating VM PID. They cannot be
 used with another VM; that identity is host metadata and is not sent on the wire.
@@ -145,7 +172,7 @@ using the enclosing send frame's ID. Calls and casts use this kind to reach
 
 The proxy answers with a `:proxy_reply` event carrying the same `id` and a
 `result` of `{:ok, reply}` or
-`{:error, :noproc | :timeout | {:exit, inspected_reason}}`.
+`{:error, :noproc | :timeout | :frame_too_large | {:exit, inspected_reason}}`.
 
 The proxy passes `proxy_timeout_ms` directly to `GenServer.call/3`. An
 evaluation calls the target `kettlecorn_evaluator` with:
@@ -159,27 +186,36 @@ evaluation calls the target `kettlecorn_evaluator` with:
 }}
 ```
 
-`Kettlecorn.Timeout` derives all budgets on the host. For a finite timeout
-`t` and reply margin `m`, the budgets in milliseconds are:
+The Elixir and Rust clients both use a reply margin of 1,000 ms. For a
+finite timeout `t` and reply margin `m`, the budgets in milliseconds are:
 
 | Request | Evaluation | Capture finish | Proxy call | Host deadline |
 |---|---|---|---|---|
 | Call | | | `t` | `t + m` |
 | Evaluation | `t` | `div(m, 2)` | `t + m` | `t + 2*m` |
 
-An infinite timeout keeps the evaluation, proxy and host deadlines infinite;
-capture finish remains bounded. The evaluator's timeout covers evaluation,
-formatting and result traversal. `finish_timeout_ms` bounds collecting captured
-output and acknowledging forwarding. A timeout or capture failure starts
-teardown. Descendant cleanup runs independently of replying and can continue
+On the Elixir host, an infinite timeout keeps the evaluation, proxy and host
+deadlines infinite. Capture finish remains bounded. The evaluator's timeout
+covers evaluation, formatting and result traversal. `finish_timeout_ms`
+bounds collecting captured output and acknowledging forwarding. A timeout
+or capture failure starts teardown. Descendant cleanup can continue
 after the reply; the coordinator kills remaining capture processes at its
 cleanup deadline. The proxy and host deadlines bound the caller's wait.
 The guest receives these budgets and has no mirrored margin constants.
 
+An evaluator request may also specify `"value_limits" => {terms, depth, bytes}`.
+The evaluator includes `"value"` only if the structured result fits the
+term and depth limits and the evaluation reply, including captured output,
+fits the byte limit. If the evaluator omits `"value"`, it still returns
+the inspected result and captured output, which can exceed that byte limit.
+Clients should leave room for the enclosing proxy reply and event frame
+when choosing these limits.
+
 The C bridge routes the enclosing `send` frame and decodes its ETF payload;
 it does not interpret the proxy or evaluation timeout fields.
 
-A cast has no proxy reply. Its payload is:
+A cast has no proxy reply. The Rust client waits for the send result that
+confirms delivery to the proxy. A cast uses this payload.
 
 ```elixir
 %{"kind" => "cast", "target" => name, "request" => term}

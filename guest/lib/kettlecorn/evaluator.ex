@@ -21,6 +21,7 @@ defmodule Kettlecorn.Evaluator do
   alias Kettlecorn.Evaluator.Capture
 
   @max_value_terms 1_000_000
+  @max_value_depth 508
 
   @languages %{"elixir" => Kettlecorn.Evaluator.Elixir, "erlang" => Kettlecorn.Evaluator.Erlang}
 
@@ -53,6 +54,7 @@ defmodule Kettlecorn.Evaluator do
     binding = opts |> Map.get("binding", %{}) |> Enum.map(fn {k, v} -> {String.to_atom(k), v} end)
     parent = self()
     capture = Capture.start(Process.group_leader())
+    {terms, depth, bytes} = value_limits(opts)
 
     # Formatting and checking the result must also run under the timeout.
     {pid, ref} =
@@ -62,7 +64,7 @@ defmodule Kettlecorn.Evaluator do
         reply =
           try do
             case language.eval(code, binding) do
-              {:ok, value} -> success(value, language.inspected(value))
+              {:ok, value} -> success(value, language.inspected(value), terms, depth)
               {:error, kind, message} -> failure(kind, message)
             end
           catch
@@ -95,7 +97,7 @@ defmodule Kettlecorn.Evaluator do
       end
 
     {output, capture} = Capture.finish(capture, mode, finish_timeout)
-    GenServer.reply(from, with_output(reply, output))
+    GenServer.reply(from, reply |> with_output(output) |> limit_value_bytes(bytes))
     Capture.await(capture)
   end
 
@@ -104,9 +106,21 @@ defmodule Kettlecorn.Evaluator do
     if truncated, do: {status, Map.put(reply, "output_truncated", true)}, else: {status, reply}
   end
 
-  defp success(value, inspected) do
+  defp limit_value_bytes({:ok, %{"value" => _} = reply} = result, limit)
+       when is_integer(limit) do
+    if :erlang.external_size(result) > limit,
+      do: {:ok, Map.delete(reply, "value")},
+      else: result
+  end
+
+  defp limit_value_bytes(result, _limit), do: result
+
+  defp success(value, inspected, terms, depth) do
     reply = %{"inspected" => inspected}
-    if plain?(value), do: {:ok, Map.put(reply, "value", value)}, else: {:ok, reply}
+
+    if walk(value, terms, depth) == :no,
+      do: {:ok, reply},
+      else: {:ok, Map.put(reply, "value", value)}
   end
 
   defp failure(kind, message),
@@ -114,24 +128,43 @@ defmodule Kettlecorn.Evaluator do
 
   # Shared subterms can make traversal exponential in construction time
   # (e.g. Enum.reduce(1..40, :x, &{&2, &2})); bound the nodes visited.
-  defp plain?(value), do: walk(value, @max_value_terms) != :no
+  defp value_limits(%{"value_limits" => {terms, depth, bytes}})
+       when is_integer(terms) and terms > 0 and is_integer(depth) and depth >= 0 and
+              is_integer(bytes) and bytes > 0 do
+    {min(terms, @max_value_terms), min(depth, @max_value_depth), bytes}
+  end
 
-  defp walk(_value, 0), do: :no
-  defp walk(v, n) when is_number(v) or is_binary(v) or is_atom(v), do: n - 1
-  defp walk(v, n) when is_list(v), do: walk_list(v, n - 1)
-  defp walk(v, n) when is_tuple(v), do: walk_list(Tuple.to_list(v), n - 1)
+  defp value_limits(_opts), do: {@max_value_terms, @max_value_depth, nil}
+
+  defp walk(_value, n, depth) when n <= 0 or depth < 0, do: :no
+  defp walk(v, n, _depth) when is_number(v) or is_binary(v) or is_atom(v), do: n - 1
+  defp walk(v, n, depth) when is_list(v), do: walk_list(v, n - 1, depth - 1)
+  defp walk(v, n, depth) when is_tuple(v), do: walk_list(Tuple.to_list(v), n - 1, depth - 1)
   # Avoid protocol dispatch on guest structs.
-  defp walk(v, n) when is_map(v), do: walk_list(Map.to_list(v), n - 1)
-  defp walk(_value, _n), do: :no
+  defp walk(v, n, depth) when is_map(v), do: walk_pairs(:maps.iterator(v), n - 1, depth - 1)
+  defp walk(_value, _n, _depth), do: :no
 
-  defp walk_list([], n), do: n
+  defp walk_list([], n, _depth), do: n
 
-  defp walk_list([head | tail], n) do
-    case walk(head, n) do
+  defp walk_list([head | tail], n, depth) do
+    case walk(head, n, depth) do
       :no -> :no
-      n -> walk_list(tail, n)
+      n -> walk_list(tail, n, depth)
     end
   end
 
-  defp walk_list(_improper, _n), do: :no
+  defp walk_list(_improper, _n, _depth), do: :no
+
+  defp walk_pairs(iterator, n, depth) do
+    case :maps.next(iterator) do
+      :none ->
+        n
+
+      {key, value, rest} ->
+        with n when is_integer(n) <- walk(key, n - 1, depth),
+             n when is_integer(n) <- walk(value, n, depth) do
+          walk_pairs(rest, n, depth)
+        end
+    end
+  end
 end

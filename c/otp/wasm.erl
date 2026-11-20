@@ -26,19 +26,16 @@
 %% -on_load attribute (a preloaded module with one aborts the VM at boot).
 -export([getaddrinfo/2, http_available/0, http_send/8, http_read/2, http_close/1]).
 -export([on_load/0, send/1, host_call/3]).
-%% Sends an envelope as is, already encoded: the guest's own events to the
-%% host (Kettlecorn.Event), apart from send/1's vm_message ones.
--export([send_raw/1]).
+-export([send_raw/1, send_envelope/1]).
 
 -nifs([send_raw/1, getaddrinfo/2,
         http_available/0, http_send/8, http_read/2, http_close/1]).
 
 -define(HOST_CALL_TIMEOUT, 5000).
 
--spec send(term()) -> ok.
+-spec send(term()) -> ok | {error, frame_too_large}.
 send(Message) ->
-    Envelope = #{type => vm_message, data => Message},
-    ok = send_raw(term_to_binary(Envelope)).
+    send_envelope(#{type => vm_message, data => Message}).
 
 -spec host_call(binary(), map(), proplists:proplist()) -> {ok, term()} | {error, term()}.
 host_call(Name, Args, Opts) when is_binary(Name), is_map(Args), is_list(Opts) ->
@@ -47,11 +44,82 @@ host_call(Name, Args, Opts) when is_binary(Name), is_map(Args), is_list(Opts) ->
     ReplyTo = term_to_binary({self(), Token}),
     Envelope = #{type => host_call, name => Name, args => Args,
                  reply_to => ReplyTo},
-    ok = send_raw(term_to_binary(Envelope)),
-    receive
-        {wasm, {Token, Payload}} -> Payload
-    after Timeout ->
-        {error, timeout}
+    case send_envelope(Envelope) of
+        ok ->
+            receive
+                {wasm, {Token, Payload}} -> Payload
+            after Timeout ->
+                {error, timeout}
+            end;
+        {error, frame_too_large} = Error -> Error
+    end.
+
+-spec send_envelope(map()) -> ok | {error, frame_too_large}.
+send_envelope(Envelope) ->
+    case guest_frame_limit() of
+        infinity -> send_raw(term_to_binary(Envelope));
+        Limit ->
+            %% external_size is an upper bound. The frame also needs a type byte.
+            try frame_budget([Envelope], Limit - 1) of
+                Remaining when Remaining >= 0 -> send_raw(term_to_binary(Envelope));
+                _ -> {error, frame_too_large}
+            catch
+                error:system_limit -> {error, frame_too_large}
+            end
+    end.
+
+%% Charge each scalar's version byte too, so the estimate stays conservative.
+%% Subtract per node to avoid external_size's 32-bit aggregate overflow.
+frame_budget(_, Remaining) when Remaining < 0 -> Remaining;
+frame_budget([], Remaining) -> Remaining;
+frame_budget([Term | Rest], Remaining) when is_binary(Term) ->
+    frame_budget(Rest, Remaining - 6 - byte_size(Term));
+frame_budget([Term | Rest], Remaining) when is_integer(Term), Term >= 0, Term =< 255 ->
+    frame_budget(Rest, Remaining - 3);
+frame_budget([Term | Rest], Remaining)
+  when is_integer(Term), Term >= -2147483648, Term =< 2147483647 ->
+    frame_budget(Rest, Remaining - 6);
+frame_budget([Term | Rest], Remaining) when is_float(Term) ->
+    frame_budget(Rest, Remaining - 10);
+frame_budget([[] | Rest], Remaining) ->
+    frame_budget(Rest, Remaining - 2);
+frame_budget([Term | Rest], Remaining) when is_tuple(Term) ->
+    frame_tuple_budget(Term, 1, Rest, Remaining - 5);
+frame_budget([Term | Rest], Remaining) when is_map(Term) ->
+    frame_map_budget(maps:iterator(Term), Rest, Remaining - 5);
+frame_budget([[Head | Tail] | Rest], Remaining) ->
+    frame_budget([Head, Tail | Rest], Remaining - 5);
+frame_budget([Term | _], _) when is_function(Term); is_record(Term) -> -1;
+frame_budget([Term | Rest], Remaining) ->
+    frame_budget(Rest, Remaining - erlang:external_size(Term)).
+
+frame_tuple_budget(_, _, _, Remaining) when Remaining < 0 -> Remaining;
+frame_tuple_budget(Term, Index, Rest, Remaining) when Index > tuple_size(Term) ->
+    frame_budget(Rest, Remaining);
+frame_tuple_budget(Term, Index, Rest, Remaining) ->
+    Budget = frame_budget([element(Index, Term)], Remaining),
+    frame_tuple_budget(Term, Index + 1, Rest, Budget).
+
+frame_map_budget(_, _, Remaining) when Remaining < 0 -> Remaining;
+frame_map_budget(Iterator, Rest, Remaining) ->
+    case maps:next(Iterator) of
+        none -> frame_budget(Rest, Remaining);
+        {Key, Value, Next} ->
+            Budget = frame_budget([Key, Value], Remaining),
+            frame_map_budget(Next, Rest, Budget)
+    end.
+
+guest_frame_limit() ->
+    Key = {?MODULE, guest_frame_limit},
+    case persistent_term:get(Key, undefined) of
+        undefined ->
+            Limit = case os:getenv("KETTLECORN_MAX_GUEST_FRAME_BYTES") of
+                false -> infinity;
+                Value -> list_to_integer(Value)
+            end,
+            persistent_term:put(Key, Limit),
+            Limit;
+        Limit -> Limit
     end.
 
 -spec on_load() -> ok.
