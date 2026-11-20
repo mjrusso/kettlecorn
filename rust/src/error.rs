@@ -4,7 +4,13 @@ use std::fmt;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
+    RuntimeNotFound(std::path::PathBuf),
     InvalidRuntime(anyhow::Error),
+    IncompatibleEngine {
+        required: String,
+        embedded: &'static str,
+    },
+    InstallRuntime(anyhow::Error),
     InvalidOptions(anyhow::Error),
     Preparation(anyhow::Error),
     Boot(anyhow::Error),
@@ -22,7 +28,19 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RuntimeNotFound(path) => write!(
+                formatter,
+                "no runtime installed at {}. Install it or set KETTLECORN_RUNTIME",
+                path.display()
+            ),
             Self::InvalidRuntime(error) => write!(formatter, "invalid runtime: {error:#}"),
+            Self::IncompatibleEngine { required, embedded } => write!(
+                formatter,
+                "runtime requires Wasmtime {required}, this build embeds {embedded}"
+            ),
+            Self::InstallRuntime(error) => {
+                write!(formatter, "runtime installation failed: {error:#}")
+            }
             Self::InvalidOptions(error) => write!(formatter, "invalid VM options: {error:#}"),
             Self::Preparation(error) => write!(formatter, "runtime preparation failed: {error:#}"),
             Self::Boot(error) => write!(formatter, "guest boot failed: {error:#}"),
@@ -49,6 +67,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidRuntime(error)
+            | Self::InstallRuntime(error)
             | Self::InvalidOptions(error)
             | Self::Preparation(error)
             | Self::Boot(error)

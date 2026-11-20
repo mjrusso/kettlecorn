@@ -7,6 +7,9 @@ license = "Apache-2.0"
 repository = "https://github.com/mjrusso/kettlecorn"
 readme = "README.md"
 
+[package.metadata.docs.rs]
+features = ["installer"]
+
 [[bin]]
 name = "kettlecorn-launch"
 path = "src/bin/kettlecorn-launch.rs"
@@ -16,10 +19,12 @@ required-features = ["cli"]
 default = ["http"]
 cli = ["dep:clap", "dep:humantime", "dep:mimalloc", "tokio/signal"]
 http = ["dep:wasmtime-wasi-http"]
+installer = ["dep:flate2", "dep:tar", "dep:ureq"]
 
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"], optional = true }
+flate2 = { version = "1", optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 humantime = { version = "2", optional = true }
 libc = "0.2"
@@ -27,9 +32,11 @@ num-bigint = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+tar = { version = "0.4.46", default-features = false, optional = true }
 tempfile = "3"
 tokio = { version = "1.51", features = ["rt", "net", "io-util", "sync", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls", "platform-verifier"], optional = true }
 wasmtime = { version = "=50.0.2", default-features = false, features = ["anyhow", "std", "runtime", "cranelift", "parallel-compilation", "component-model-async", "threads"] }
 wasmtime-wasi = { version = "=50.0.2", default-features = false, features = ["p3"] }
 wasmtime-wasi-http = { version = "=50.0.2", optional = true, default-features = false, features = ["p3", "default-send-request"] }

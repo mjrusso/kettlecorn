@@ -1,10 +1,15 @@
 use super::{CompilationCache, Preparation, RootOptions, WASMTIME_VERSION, root};
-use anyhow::{Context, Result, ensure};
+use crate::Error;
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::env;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+pub(super) const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug)]
 pub(crate) enum Mode {
@@ -60,10 +65,16 @@ impl GuestOptions {
     }
 }
 
+/// A loaded runtime directory with shared engine and component preparation across clones.
 #[derive(Clone)]
 pub struct Runtime {
     directory: PathBuf,
     pub(super) preparation: Arc<Mutex<Preparation>>,
+    launch: Launch,
+}
+
+#[derive(Clone)]
+struct Launch {
     emulator: Vec<String>,
     init: Vec<String>,
     env: BTreeMap<String, String>,
@@ -76,9 +87,37 @@ struct Manifest {
     protocol: u32,
     tested_with: Tested,
 }
+
+enum LoadSource {
+    Explicit,
+    Release,
+}
 #[derive(Deserialize)]
 struct Tested {
     wasmtime: String,
+}
+
+impl Manifest {
+    fn check_protocol(&self) -> Result<()> {
+        ensure!(
+            self.protocol == crate::protocol::VERSION,
+            "runtime protocol {} does not match {}",
+            self.protocol,
+            crate::protocol::VERSION
+        );
+        Ok(())
+    }
+
+    fn check_engine(self) -> Result<(), Error> {
+        if self.tested_with.wasmtime == WASMTIME_VERSION {
+            Ok(())
+        } else {
+            Err(Error::IncompatibleEngine {
+                required: self.tested_with.wasmtime,
+                embedded: WASMTIME_VERSION,
+            })
+        }
+    }
 }
 
 impl Runtime {
@@ -100,60 +139,68 @@ impl Runtime {
             &self.directory.join("root"),
             &root,
             options,
-            self.env.get("KETTLECORN_CACERTFILE").map(String::as_str),
+            self.launch
+                .env
+                .get("KETTLECORN_CACERTFILE")
+                .map(String::as_str),
         )
     }
 
-    pub fn load(directory: impl AsRef<Path>) -> Result<Self, crate::Error> {
-        Self::load_runtime(directory.as_ref()).map_err(crate::Error::InvalidRuntime)
+    /// Loads a bundled or locally built runtime, resolving its directory's symlinks.
+    /// Checks the protocol and exact Wasmtime version, then reads the launch configuration.
+    /// This is synchronous and does not download, copy, compile, or boot the runtime.
+    ///
+    /// Unlike [`Runtime::find`]'s cache lookup, explicit loading does not require the
+    /// runtime's release version or platform metadata to match this crate. A Wasmtime
+    /// mismatch returns [`Error::IncompatibleEngine`]; invalid manifest or launch files
+    /// return [`Error::InvalidRuntime`].
+    pub fn load(directory: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::load_from(directory.as_ref(), LoadSource::Explicit)
     }
 
-    fn load_runtime(directory: &Path) -> Result<Self> {
-        let directory = directory.canonicalize().context("runtime directory")?;
-        let manifest: Manifest =
-            serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
-        ensure!(
-            manifest.tested_with.wasmtime == WASMTIME_VERSION,
-            "runtime requires Wasmtime {}, launcher embeds {}",
-            manifest.tested_with.wasmtime,
-            WASMTIME_VERSION
-        );
-        ensure!(
-            manifest.protocol == crate::protocol::VERSION,
-            "runtime protocol {} does not match {}",
-            manifest.protocol,
-            crate::protocol::VERSION
-        );
-        let launch = directory.join("launch");
-        let env = lines(&launch.join("env"))?
-            .into_iter()
-            .map(|entry| {
-                let (name, value) = entry
-                    .split_once('=')
-                    .context("invalid runtime environment")?;
-                Ok((name.to_owned(), value.to_owned()))
-            })
-            .collect::<Result<_>>()?;
+    pub(super) fn load_release(directory: &Path) -> Result<Self, Error> {
+        Self::load_from(directory, LoadSource::Release)
+    }
+
+    fn load_from(directory: &Path, source: LoadSource) -> Result<Self, Error> {
+        let invalid = |error: anyhow::Error| {
+            Error::InvalidRuntime(error.context(format!("load runtime at {}", directory.display())))
+        };
+        let read = || {
+            let root = directory.canonicalize().context("runtime directory")?;
+            let json = std::fs::read(root.join("manifest.json")).context("read manifest.json")?;
+            let (manifest, release) = match source {
+                LoadSource::Explicit => {
+                    serde_json::from_slice(&json).map(|manifest| (manifest, None))
+                }
+                LoadSource::Release => serde_json::from_slice(&json)
+                    .map(|ReleaseManifest { manifest, identity }| (manifest, Some(identity))),
+            }
+            .context("parse manifest.json")?;
+            Ok((root, manifest, release))
+        };
+        let (root, manifest, release) = read().map_err(invalid)?;
+        manifest.check_protocol().map_err(invalid)?;
+        if let Some(identity) = &release {
+            identity.check().map_err(invalid)?;
+        }
+        manifest.check_engine()?;
+        let launch = Launch::read(&root).map_err(invalid)?;
+        if release.is_some() {
+            check_release_layout(&root, &launch).map_err(invalid)?;
+        }
         Ok(Self {
-            emulator: lines(&launch.join("emulator-args"))?,
-            init: lines(&launch.join("init-args"))?,
-            env,
-            module: std::fs::read_to_string(launch.join("module"))?
-                .trim()
-                .to_owned(),
-            http_module: std::fs::read_to_string(launch.join("http-module"))?
-                .trim()
-                .to_owned(),
-            directory,
+            directory: root,
+            launch,
             preparation: Arc::default(),
         })
     }
 
     pub(crate) fn component(&self, http: bool) -> PathBuf {
         self.directory.join(if http {
-            &self.http_module
+            &self.launch.http_module
         } else {
-            &self.module
+            &self.launch.module
         })
     }
 
@@ -169,7 +216,7 @@ impl Runtime {
     }
 
     pub(crate) fn environment(&self, options: &GuestOptions) -> Vec<(String, String)> {
-        let mut env = self.env.clone();
+        let mut env = self.launch.env.clone();
         env.extend(options.env.clone());
         if options.framed {
             env.insert("KETTLECORN_FRAMED".into(), "1".into());
@@ -185,10 +232,10 @@ impl Runtime {
             "-S".into(),
             format!("{0}:{0}", options.schedulers),
         ];
-        args.extend(self.emulator.clone());
+        args.extend(self.launch.emulator.clone());
         args.extend(options.emulator_flags.clone());
         args.push("--".into());
-        args.extend(self.init.clone());
+        args.extend(self.launch.init.clone());
         for path in &options.code_paths {
             args.extend(["-pa".into(), path.clone()]);
         }
@@ -269,6 +316,121 @@ impl Runtime {
         }
         args.extend(self.arguments(options));
         args
+    }
+}
+
+#[derive(Deserialize)]
+struct ReleaseManifest {
+    #[serde(flatten)]
+    manifest: Manifest,
+    #[serde(flatten)]
+    identity: ReleaseIdentity,
+}
+
+#[derive(Deserialize)]
+struct ReleaseIdentity {
+    kettlecorn: String,
+    platform: String,
+    #[serde(rename = "otp")]
+    _otp: String,
+    #[serde(rename = "elixir")]
+    _elixir: String,
+    #[serde(rename = "imports")]
+    _imports: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ReleaseIdentity {
+    fn check(&self) -> Result<()> {
+        ensure!(
+            self.kettlecorn == RELEASE_VERSION,
+            "expected Kettlecorn runtime version {RELEASE_VERSION}, found {}",
+            self.kettlecorn
+        );
+        let platform = release_platform()?;
+        ensure!(
+            self.platform == platform,
+            "expected runtime for {platform}, found {}",
+            self.platform
+        );
+        Ok(())
+    }
+}
+
+fn check_release_layout(directory: &Path, launch: &Launch) -> Result<()> {
+    ensure!(
+        directory
+            .join("root")
+            .metadata()
+            .context("read runtime root/")?
+            .is_dir(),
+        "runtime root/ must be a directory"
+    );
+    for name in ["bin/kettlecorn-launch", "bin/kettlecorn-run"] {
+        let metadata = directory
+            .join(name)
+            .metadata()
+            .with_context(|| format!("read {name}"))?;
+        ensure!(
+            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+            "missing executable {name}"
+        );
+    }
+    for module in [&launch.module, &launch.http_module] {
+        let path = Path::new(module);
+        ensure!(
+            !module.contains(['\r', '\n']) && path.file_name() == Some(path.as_os_str()),
+            "invalid runtime emulator name {module:?}"
+        );
+        let metadata = directory
+            .join(path)
+            .metadata()
+            .with_context(|| format!("read emulator {module}"))?;
+        ensure!(
+            metadata.is_file(),
+            "runtime emulator {module} must be a file"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn release_platform() -> Result<&'static str> {
+    match (env::consts::ARCH, env::consts::OS) {
+        ("x86_64", "linux") => Ok("x86_64-linux"),
+        ("aarch64", "linux") => Ok("aarch64-linux"),
+        ("aarch64", "macos") => Ok("aarch64-darwin"),
+        (arch, os) => bail!("no Kettlecorn runtime release for {arch}-{os}"),
+    }
+}
+
+impl Launch {
+    fn read(directory: &Path) -> Result<Self> {
+        let launch = directory.join("launch");
+        let module = |name| -> Result<String> {
+            Ok(std::fs::read_to_string(launch.join(name))
+                .with_context(|| format!("read launch/{name}"))?
+                .trim()
+                .to_owned())
+        };
+        let env = lines(&launch.join("env"))?
+            .into_iter()
+            .map(|entry| {
+                let (name, value) = entry
+                    .split_once('=')
+                    .context("invalid runtime environment")?;
+                Ok((name.to_owned(), value.to_owned()))
+            })
+            .collect::<Result<_>>()?;
+        let emulator = lines(&launch.join("emulator-args"))?;
+        let init = lines(&launch.join("init-args"))?;
+        let module_name = module("module")?;
+        let http_module = module("http-module")?;
+        Ok(Self {
+            emulator,
+            init,
+            env,
+            module: module_name,
+            http_module,
+        })
     }
 }
 

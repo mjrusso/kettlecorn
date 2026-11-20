@@ -7,12 +7,11 @@
 //! It uses the same guest runtime as [Kettlecorn's Elixir package](https://hex.pm/packages/kettlecorn).
 //! Running guest code requires no host Elixir installation.
 //!
-//! Download and extract the runtime archive for your platform from the
-//! [GitHub release](https://github.com/mjrusso/kettlecorn/releases) matching
-//! your crate version.
-//!
-//! Load a runtime with [`Runtime::load`], call [`Runtime::start`] from a Tokio
-//! runtime to boot a VM, and evaluate code with [`Vm::eval`].
+//! Use [`Runtime::find`] for runtime discovery or [`Runtime::load`] to supply
+//! a runtime directory. With the `installer` feature, `Runtime::install()`
+//! installs the matching release into the cache shared with Elixir.
+//! Call [`Runtime::start`] from a Tokio runtime to boot a VM and evaluate
+//! code with [`Vm::eval`].
 
 #[cfg(feature = "cli")]
 mod cli;

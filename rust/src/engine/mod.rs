@@ -1,6 +1,7 @@
 mod cache;
 #[cfg(test)]
 mod embedding_tests;
+mod installed;
 mod root;
 mod runtime;
 pub(crate) mod streams;
@@ -341,6 +342,19 @@ mod tests {
         let mut options = GuestOptions::new(root);
         options.cache = CompilationCache::Directory(base.path().join("cache"));
         (base, Runtime::load(directory).unwrap(), options)
+    }
+
+    #[test]
+    fn explicit_load_ignores_release_metadata() -> anyhow::Result<()> {
+        let (base, _, _) = fixture();
+        let runtime = base.path().join("runtime");
+        let path = runtime.join("manifest.json");
+        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        manifest["kettlecorn"] = serde_json::json!(false);
+        manifest["platform"] = serde_json::json!({ "custom": true });
+        fs::write(path, serde_json::to_vec(&manifest)?)?;
+        Runtime::load(runtime)?;
+        Ok(())
     }
 
     #[test]
