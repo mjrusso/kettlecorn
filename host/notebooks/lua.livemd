@@ -1,7 +1,7 @@
 # Lua inside Kettlecorn
 
 ```elixir
-Mix.install([{:kettlecorn, "~> 0.1.0"}, {:lua, "1.0.2"}])
+Mix.install([{:kettlecorn, "~> 0.2.0"}, {:lua, "1.0.2"}])
 ```
 
 ## About this notebook

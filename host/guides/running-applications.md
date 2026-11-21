@@ -57,8 +57,8 @@ Extract the archive and add its `bin` directory to your PATH. For example,
 on x86_64 Linux:
 
 ```sh
-tar -xzf kettlecorn-runtime-0.1.0-x86_64-linux.tar.gz
-export PATH="$PWD/kettlecorn-runtime-0.1.0-x86_64-linux/bin:$PATH"
+tar -xzf kettlecorn-runtime-0.2.0-x86_64-linux.tar.gz
+export PATH="$PWD/kettlecorn-runtime-0.2.0-x86_64-linux/bin:$PATH"
 kettlecorn-run --help
 ```
 
@@ -130,7 +130,7 @@ Cooking requires the POSIX `cp` tool. Add Kettlecorn to the project for the
 cooking task:
 
 ```elixir
-{:kettlecorn, "~> 0.1", runtime: false}
+{:kettlecorn, "~> 0.2", runtime: false}
 ```
 
 Use the runtime's OTP major release and exact Elixir version to compile

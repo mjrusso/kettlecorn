@@ -1,7 +1,7 @@
 # Exploring Kettlecorn's internals
 
 ```elixir
-Mix.install([{:kettlecorn, "~> 0.1.0"}])
+Mix.install([{:kettlecorn, "~> 0.2.0"}])
 ```
 
 ## About this notebook

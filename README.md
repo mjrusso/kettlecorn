@@ -43,7 +43,7 @@ Requires Elixir 1.20 or later on x86_64 or ARM64 Linux, or Apple silicon macOS.
 Add Kettlecorn to your Mix dependencies:
 
 ```elixir
-{:kettlecorn, "~> 0.1"}
+{:kettlecorn, "~> 0.2"}
 ```
 
 Fetch the dependency and install the runtime:

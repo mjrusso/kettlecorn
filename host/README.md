@@ -31,7 +31,7 @@ Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
 
 ```elixir
 def deps do
-  [{:kettlecorn, "~> 0.1"}]
+  [{:kettlecorn, "~> 0.2"}]
 end
 ```
 
