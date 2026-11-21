@@ -1,4 +1,4 @@
-![Kettlecorn logo](assets/kettlecorn.png)
+![Kettlecorn logo](site/assets/kettlecorn.png)
 
 [![Hex][kettlecorn-hex-badge]][kettlecorn-hex] [![HexDocs][docs-badge]][kettlecorn-docs]
 [![crates.io][kettlecorn-crate-badge]][kettlecorn-crate] [![Rust docs][rust-docs-badge]][kettlecorn-rust-docs]

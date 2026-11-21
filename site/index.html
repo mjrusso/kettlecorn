@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kettlecorn</title>
+    <meta name="description" content="Run Elixir and Erlang in a WebAssembly sandbox from Elixir, Rust, or the command line." />
+    <style>
+      :root {
+        background: #fbf2e9;
+        color: #1f1f1f;
+        font-family: system-ui, sans-serif;
+        font-size: 106.25%;
+        line-height: 1.55;
+      }
+      body {
+        max-width: 46rem;
+        margin: 0 auto;
+        padding: 1.5rem 1rem 2rem;
+      }
+      h1 {
+        margin: 0 0 2rem;
+      }
+      h1 img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      h2 {
+        font-size: 1.15rem;
+        margin: 1.5rem 0 0.5rem;
+      }
+      ul {
+        margin: 0;
+        padding-left: 1.25rem;
+      }
+      li {
+        margin: 0.3rem 0;
+      }
+      a {
+        color: #2547b3;
+      }
+      a:hover {
+        color: #1f1f1f;
+      }
+      footer {
+        margin-top: 2.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #e2d8c3;
+        color: #55524b;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1><img src="assets/kettlecorn.png" width="1280" height="640" alt="Kettlecorn" /></h1>
+
+      <p>
+        Kettlecorn runs Elixir and Erlang in a WebAssembly sandbox. Use it from Elixir,
+        Rust, or the command line to isolate user code, plugins, and whole Mix applications.
+        Each VM has a private filesystem and retains state across evaluations.
+      </p>
+
+      <h2>Getting started</h2>
+      <ul>
+        <li><a href="https://hexdocs.pm/kettlecorn/getting-started.html">Elixir quickstart</a></li>
+        <li><a href="https://crates.io/crates/kettlecorn#user-content-quickstart">Rust quickstart</a></li>
+        <li><a href="https://hexdocs.pm/kettlecorn/running-applications.html#command-line">Command-line guide</a></li>
+      </ul>
+
+      <p>
+        Kettlecorn is experimental. Read the
+        <a href="https://hexdocs.pm/kettlecorn/sandbox.html">sandbox guide</a>
+        before running untrusted code. The source is on
+        <a href="https://github.com/mjrusso/kettlecorn">GitHub</a>.
+      </p>
+    </main>
+    <footer>
+      Copyright &copy; 2026 <a href="https://mjrusso.com">Michael Russo</a>.
+      Licensed under the
+      <a href="https://github.com/mjrusso/kettlecorn/blob/main/LICENSE">Apache License 2.0</a>.
+    </footer>
+  </body>
+</html>

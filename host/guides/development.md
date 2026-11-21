@@ -63,6 +63,7 @@ c/                     emulator compatibility code, NIFs, and OTP replacements
 guest/                 guest application and Hex dependency definitions
 host/                  Elixir host library, tests, guides, and notebooks
 rust/                  Kettlecorn Rust library and native launcher
+site/                  static project homepage
 bin/kettlecorn-run     script and IEx entrypoint
 tests/cli/             CLI integration tests
 examples/              scripts and example applications
@@ -130,6 +131,14 @@ for code invariants and required validation when changing the project, and
 [RELEASING.md](https://github.com/mjrusso/kettlecorn/blob/main/RELEASING.md) for publishing the runtime, Hex package, and Rust crate.
 
 See [performance](performance.md) for local benchmark commands.
+
+## Homepage
+
+The homepage lives in `site/index.html`. Set the repository's Pages source to
+**GitHub Actions** under **Settings → Pages**. The
+[site workflow](https://github.com/mjrusso/kettlecorn/blob/main/.github/workflows/site.yml)
+publishes the homepage and the shared logo when either changes on `main`.
+For the first deployment, run the workflow from `main` after enabling Pages.
 
 ## Build stages
 
