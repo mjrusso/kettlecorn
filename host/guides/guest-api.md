@@ -4,19 +4,31 @@ These modules run **inside the guest VM**. They ship in the runtime's
 `kettlecorn_guest` application; adding the host Hex package to a project
 does not make them available on the host.
 
-The **host** is your Elixir application. The **guest** is the OTP system in
-Wasmtime. The **runtime** contains the native launcher, WebAssembly emulators,
+The **host** is your Elixir or Rust application. The **guest** is the OTP system
+in Wasmtime. The **runtime** contains the native launcher, WebAssembly emulators,
 and the guest's OTP, Elixir, and library files. A **cooked application** is a
 compiled Mix application and its dependencies, packaged for that guest.
 
-For executable examples, see [Working with guest VMs](../notebooks/working-with-guests.livemd)
-and [Use cases](../notebooks/use-cases.livemd). The host functions are documented
-in `Kettlecorn`.
+For Elixir examples, see [Working with guest VMs](../notebooks/working-with-guests.livemd)
+and [Use cases](../notebooks/use-cases.livemd). For Rust, see
+[Hello World](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/hello-world)
+for basic embedding,
+[Device Monitor](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/device-monitor)
+for stateful plugins and host callbacks, and
+[Pulse Field](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/pulse-field)
+for a graphical application driven by Elixir scripts.
+
+The host functions are documented in `Kettlecorn` for Elixir and the
+[Rust API reference](https://docs.rs/kettlecorn) for Rust.
 
 ## Messages to the host
 
-`Kettlecorn.Host.send(term)` returns `:ok`. With `owner: pid` set when
-starting the VM, the owner receives:
+`Kettlecorn.Host.send(term)` sends a guest term and returns `:ok`, or
+`{:error, :frame_too_large}` if it fails the [frame size check](#frame-size-checks).
+
+### Elixir host
+
+With `owner: pid` set when starting the VM, the owner receives:
 
 ```elixir
 {:kettlecorn, vm, {:message, term}}
@@ -30,12 +42,29 @@ In the other direction, `Kettlecorn.send/4` delivers `{:wasm, payload}` to a
 guest process, addressed by its registered name or a `Kettlecorn.Pid`
 received from that VM.
 
+### Rust host
+
+`Vm::subscribe` receives future guest messages as `Value` instances. To receive
+messages sent during boot, set `VmOptions::events` to a broadcast sender and
+subscribe before starting the VM. A slow receiver gets a lag count when
+messages have been overwritten; Rust delivery has no owner acknowledgments.
+
+Use `Vm::call` or `Vm::cast` to send requests to registered guest processes.
+These invoke the guest process through `Kettlecorn.Proxy`; they do not send
+the `{:wasm, payload}` messages used by the Elixir host's `Kettlecorn.send/4`.
+
 ## Host calls
 
 `Kettlecorn.Host.call(name, args, opts)` asks the host to perform
 an operation. `name` is a string, `args` defaults to `%{}`, and `opts` defaults
 to `[]`. `args` must be a map. The `:timeout` option is in milliseconds and
-defaults to 5000; it also accepts `:infinity`.
+defaults to 5000; it also accepts `:infinity`. An unanswered call returns
+`{:error, :timeout}`. A request that fails the
+[frame size check](#frame-size-checks) returns `{:error, :frame_too_large}`
+before sending.
+
+### Elixir host
+
 The guest waits while the owner handles:
 
 ```elixir
@@ -45,20 +74,52 @@ The guest waits while the owner handles:
 The owner checks the name and arguments, then calls
 `Kettlecorn.reply(vm, reply_to, result)`. `result` must be `{:ok, value}` or
 `{:error, binary_reason}`. The guest receives that tuple unchanged.
-An unanswered call returns `{:error, :timeout}`.
 With no VM owner configured, the host replies `{:error, "no host handler"}`.
+
+`Kettlecorn.reply/3` queues a reply without confirming delivery.
+
+### Rust host
+
+Register async functions with `VmOptions::register` before starting the VM.
+The function receives the argument map as a `Value` and returns
+`Result<Value, String>`. The guest receives `Ok(value)` as `{:ok, value}`
+or `Err(reason)` as `{:error, reason}`, with the reason encoded as a binary.
+An unregistered name returns `{:error, "unknown host function"}`.
+
+`VmOptions::host_call_timeout` sets the timeout for waiting on an async
+callback, independently of the guest's `:timeout`. It cannot interrupt
+blocking work. The first poll runs inline with VM transport; blocking there
+stalls transport and can return a successful result after the timeout.
+Use Tokio's blocking executor for blocking work. A callback timeout returns
+a binary error reason.
+Excess calls can time out if the client's rejection queue is full. See
+[guest callbacks](architecture.md#guest-callbacks) for capacity limits.
+
+### Reply decoding
 
 The guest decodes host payloads without creating atoms. A reply containing
 an atom absent from the guest is rejected and can cause the call to time
 out. Prefer strings for application-defined names and error reasons.
-`Kettlecorn.reply/3` queues a reply without confirming delivery.
 
 Under `kettlecorn-run`, there is no host application to handle these events:
 `Kettlecorn.Host.send/1` is a no-op and host calls time out.
 
+## Frame size checks
+
+When a host advertises a frame limit, `send/1` and `call/3` estimate the
+encoded frame size before sending. The estimate is conservative and can
+reject a term whose actual encoding would fit. The check also rejects
+closures and native records because it cannot traverse their contents.
+Rejected requests return `{:error, :frame_too_large}`.
+
+The Rust client advertises an 8 MiB limit. See the
+[protocol specification](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md)
+for frame limits and oversized-reply behavior.
+
 ## HTTP access
 
-Start a VM with `http: true`, or use `kettlecorn-run --http`, to enable
+Start a VM with `http: true` in Elixir, set `VmOptions::http` to `true` in
+Rust, or use `kettlecorn-run --http`, to enable
 `Kettlecorn.HTTP`. Wasmtime makes these requests through `wasi:http` and
 verifies TLS with its compiled Mozilla root CA list. The `:cacerts` option
 does not change these roots. This grant permits any reachable destination;

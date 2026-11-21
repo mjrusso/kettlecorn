@@ -10,35 +10,159 @@ filesystem, and network access is off by default.
 It uses the same guest runtime as [Kettlecorn's Elixir package](https://hex.pm/packages/kettlecorn).
 Running guest code requires no host Elixir installation.
 
-```sh
-cargo add kettlecorn
-```
+## Quickstart
 
-`Runtime::find()` checks `KETTLECORN_RUNTIME` and the versioned user cache
-shared with `mix kettlecorn.install`. Discovery is offline. It returns
-`Error::RuntimeNotFound` when there is no cache entry, and reports an error
-if an explicit override cannot be loaded, using the same errors as
-`Runtime::load()`. Both methods return `Error::IncompatibleEngine` for a
-runtime that requires a different Wasmtime version. On Linux, the cache is under
-`$XDG_CACHE_HOME` or `~/.cache`. On macOS, it is under `~/Library/Caches`.
-Both platforms use `kettlecorn/runtime-<version>` within that cache.
-
-Enable the optional `installer` feature to install a matching release from Rust.
+Runtime releases support x86_64 and ARM64 Linux, and Apple silicon macOS.
+In a Cargo binary project, add these dependencies:
 
 ```sh
 cargo add kettlecorn --features installer
+cargo add tokio --features rt,net,time
+cargo add anyhow
 ```
 
-Call `Runtime::install()` to download the release for the crate version and
-platform, verify its SHA-256 against the checksum shipped with the crate,
-and publish it atomically in the cache. A cache hit reuses the installed
-release. Move an invalid cache entry aside before retrying. Installation also
-returns `Error::IncompatibleEngine` when the release requires another
-Wasmtime version. The call blocks. Use
-`Runtime::install_with_progress()` on a background thread for GUI progress.
-For a bundled runtime or a local build, pass its directory to
-`Runtime::load(path)`.
+Put this in `src/main.rs`:
 
-Call `Runtime::start` from a Tokio runtime to boot a VM and use `Vm::eval`
-to run guest code.
-[API documentation](https://docs.rs/kettlecorn)
+```rust
+use kettlecorn::{EvalOptions, Runtime, VmOptions};
+use std::time::Duration;
+
+fn main() -> anyhow::Result<()> {
+    let runtime = Runtime::install()?;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let mut options = VmOptions::default();
+            options.max_fuel = Some(50_000_000_000);
+            options.max_lifetime = Some(Duration::from_secs(30));
+            let vm = runtime.start(options).await?;
+            let evaluation = vm
+                .eval(
+                    r#"IO.puts("Hello from Elixir"); Enum.sum(1..10)"#,
+                    EvalOptions::default(),
+                )
+                .await;
+            vm.shutdown().await?;
+
+            let evaluation = evaluation?;
+            print!("{}", evaluation.output);
+            println!("{}", evaluation.result?.inspected);
+            Ok(())
+        })
+}
+```
+
+Run `cargo run`. It downloads and verifies the matching runtime if none is
+installed, or reuses the cached installation. The program prints:
+
+```text
+Hello from Elixir
+55
+```
+
+`Runtime::install` blocks, so this example calls it before entering Tokio.
+`Runtime::start`, `Vm::eval`, and `Vm::shutdown` are async.
+
+Evaluation returns captured stdout and either a script error or an `EvalValue`.
+The value includes its inspected text and an optional structured `Value`.
+The structured value is omitted for unsupported types or results that exceed
+the evaluation limits. Script errors appear in `Evaluation::result`; failures
+to deliver a request or communicate with the VM return an outer `Error`.
+The example waits for shutdown before propagating an evaluation error.
+
+## Working with a VM
+
+A VM keeps its modules, processes, and files across evaluations. Load code
+once, start supervised processes, and reuse the VM for later requests.
+Use separate VMs for mutually untrusted tenants.
+
+* `Vm::eval` evaluates Elixir or Erlang with optional bindings. Set
+  `EvalOptions::language` to `Language::Erlang` for Erlang code.
+* `Vm::call` and `Vm::cast` send requests to registered guest processes.
+  Calls return a reply; casts wait for delivery to the guest proxy.
+* `Vm::subscribe` receives messages sent by `Kettlecorn.Host.send/1`.
+
+Register async Rust functions with `VmOptions::register` before starting
+the VM. Guest code calls them through `Kettlecorn.Host.call/3`. The
+[Device Monitor example](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/device-monitor)
+shows both guest GenServer calls and Rust callbacks.
+
+To run a packaged Mix application, set `VmOptions::app_dir` to its cooked
+bundle directory. Cooking requires a host Elixir installation matching the
+runtime's Elixir version and OTP major release. See
+[cooking Mix applications](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#cooking-mix-applications)
+for the build step.
+
+`Vm::shutdown` cancels execution and waits for the VM's private filesystem
+to be removed. Dropping the VM requests cancellation; use `shutdown` when
+you need to wait for cleanup.
+
+## Runtime setup and deployment
+
+The runtime is separate from the crate and contains OTP, Elixir, and the
+guest filesystem. Include it in your deployment or install it before
+starting VMs.
+
+| Method | Use |
+|---|---|
+| `Runtime::install()` | Download a matching release or reuse the cached installation; requires the `installer` feature |
+| `Runtime::find()` | Load a runtime from the environment or user cache without downloading |
+| `Runtime::load(path)` | Load a runtime bundled with your application or built locally |
+
+`Runtime::find` checks `KETTLECORN_RUNTIME` first, then the versioned cache
+shared with `mix kettlecorn.install`. An invalid environment override returns
+an error without falling back to the cache. If the cache entry is absent,
+it returns `Error::RuntimeNotFound`.
+
+On Linux, the cache is under `$XDG_CACHE_HOME` or `~/.cache`. On macOS, it is
+under `~/Library/Caches`. Both use `kettlecorn/runtime-<version>` within that
+directory. Cached releases must match the crate version and host platform.
+
+The installer verifies the release archive's SHA-256 against the checksum
+shipped with the crate before installing it atomically in the cache. It leaves
+invalid cache entries in place; move an invalid entry aside before retrying.
+`Runtime::install_with_progress` reports cumulative downloaded bytes and an
+optional total byte count. Both installation methods block; call them on a
+background thread from an async application or GUI.
+
+All three loading methods require the runtime's protocol and Wasmtime
+versions to match the crate. A Wasmtime mismatch returns
+`Error::IncompatibleEngine`. See [runtime releases](https://github.com/mjrusso/kettlecorn/releases)
+for downloadable archives.
+
+## Execution and limits
+
+Rust VMs run as Tokio tasks in your application process. They have no
+dedicated OS thread. Each guest executes on one OS thread at a time;
+separate VMs can execute in parallel on a multithreaded Tokio runtime.
+The quickstart uses a single-threaded runtime. See [the architecture guide](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/architecture.md#threads)
+for scheduling details.
+
+`VmOptions` defaults to a 512 MiB WebAssembly memory limit, with socket and
+HTTP access disabled. Fuel and lifetime limits are opt-in; the quickstart
+sets both. Set `network: true` for sockets and DNS, or `http: true` for guest
+HTTP requests through WASI. The `http` Cargo feature supplies HTTP support
+and is enabled by default; granting access to an individual VM is separate.
+
+Kettlecorn uses experimental Wasmtime component-model threading. Review
+[sandbox limits and network grants](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/sandbox.md)
+before running untrusted workloads. The memory limit covers WebAssembly
+linear memory; host memory and disk use need separate controls.
+
+Reuse a loaded `Runtime` across VMs to share prepared components. Call
+`Runtime::warm_up(&options)` to prepare a component before starting the first
+VM. Preparation is reused when the HTTP setting and the presence of a fuel
+limit match.
+
+## Examples and API reference
+
+| Example | Demonstrates |
+|---|---|
+| [Hello World](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/hello-world) | Basic VM startup, evaluation, and shutdown |
+| [Device Monitor](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/device-monitor) | Stateful Elixir plugins, guest GenServer calls, and async Rust callbacks |
+| [Pulse Field](https://github.com/mjrusso/kettlecorn/tree/main/examples/rust/pulse-field) | A native graphical application driven by Elixir scripts |
+
+See [example instructions](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#rust-projects)
+for running these projects, and [docs.rs](https://docs.rs/kettlecorn) for the API reference.

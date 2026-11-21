@@ -4,7 +4,11 @@ Kettlecorn runs untrusted Elixir and Erlang in a WebAssembly sandbox.
 Use it from your Elixir application to evaluate code, call guest GenServers,
 or run whole Mix applications.
 
-Each VM runs OTP 29 and Elixir 1.20 in a separate
+Kettlecorn also provides a [Rust crate](https://github.com/mjrusso/kettlecorn/blob/main/rust/README.md)
+for in-process embedding. Both APIs use the same runtime archives and
+versioned installation cache.
+
+With the Elixir API, each VM runs OTP 29 and Elixir 1.20 in a separate
 [Wasmtime](https://wasmtime.dev) process with a private filesystem.
 Guests cannot start OS processes or load native code. Network access is off
 by default, and WebAssembly linear memory is capped at 512 MiB. Execution

@@ -95,11 +95,20 @@ document the input and owner-event budgets.
 
 ## Rust execution API
 
-`rust/` contains the `kettlecorn` Rust crate. A native application loads a
-runtime directory with `Runtime::load` and starts a private VM with
-`Runtime::start` on Tokio. The loader checks the runtime's protocol and
-Wasmtime versions. On a blocking thread, startup copies the runtime's
-filesystem into a private directory for the VM and prepares the component.
+`rust/` contains the `kettlecorn` Rust crate. A native application uses
+`Runtime::find` to discover a runtime or `Runtime::load` with a directory,
+then starts a private VM with `Runtime::start` on Tokio. Discovery checks
+`KETTLECORN_RUNTIME` before the versioned cache shared with Elixir. With the
+`installer` feature, `Runtime::install` verifies the matching release
+archive against the checksum shipped with the crate and publishes it to
+that cache. Neither discovery nor VM startup downloads a runtime.
+
+Both hosts validate the package version, platform, protocol, and launch
+files of a cached release. Rust returns `Error::IncompatibleEngine` if the
+release requires a different Wasmtime version. Elixir uses the launcher
+bundled with the release.
+On a blocking thread, startup copies the runtime's filesystem into a private
+directory for the VM and prepares the component.
 The Rust client checks the embedded API version in the guest's
 `:boot_ready` event.
 
@@ -476,13 +485,25 @@ The runtime and the guest application's version both come from `host/VERSION`.
 
 ## Published directories
 
+Both hosts make the cache path absolute and collapse `.` and `..` before
+looking up or publishing a runtime. Symlinks in the remaining path components
+are followed when accessing the cache.
+
+Ordinary runtime installs create the cache symlink only when the destination
+is absent. A competing installer reuses a valid winning generation and
+removes its own. Move an invalid entry aside before retrying, or use
+`mix kettlecorn.install --force` at a destination you own.
+
 Runtime installations and cooked bundles are relative symlinks to directories
-in `<destination>.versions`. Replacing the link is atomic, so concurrent
-installers and cooks cannot expose a partial directory. Runtime and cooked-app
-readers resolve the link once and retain that generation. Previous generations
-remain available; remove inactive generations only after all VMs and cached
-`Sandbox`/`Runtime` values using them have been discarded. Move an existing
-ordinary directory aside before installing or cooking to that path.
+in `<destination>.versions`. Concurrent cooks can publish complete generations
+to the same destination by atomically replacing the link. Cooking and forced
+installation require a caller-owned destination and can overwrite any
+non-directory entry there, including a regular file.
+Runtime and cooked-app readers resolve the full path, including parent
+symlinks, once and retain that generation. Remove inactive generations only
+after all VMs and cached `Sandbox`/`Runtime` values using them have been
+discarded. Move an existing ordinary directory aside before installing or
+cooking to that path.
 
 The destination and its generations can move together without breaking the
 links. Exporting a standalone artifact requires dereferencing the links,

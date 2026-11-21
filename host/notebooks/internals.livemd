@@ -10,6 +10,10 @@ Inspect the runtime's files, native launcher command line, and VM's private
 directory. Trace the frames between host and guest and examine how the host
 decodes guest data.
 
+This notebook uses the Elixir host API, which runs each VM in a separate
+launcher process. Rust embeds the engine in the application process; see
+the [architecture guide](../guides/architecture.md#rust-execution-api) for that API.
+
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
 Run the cells in order.
 Some cells use internal modules and data structures, including the protocol

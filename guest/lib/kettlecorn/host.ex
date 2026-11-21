@@ -2,14 +2,17 @@ defmodule Kettlecorn.Host do
   @moduledoc """
   Sends messages and requests from the guest to its host.
 
-    * `send/1` sends a term to the host. It arrives in the VM's `:owner` as
-      `{:kettlecorn, vm, {:message, term}}`.
+    * `send/1` sends a term to the host. An Elixir host delivers it to the
+      VM's `:owner` as `{:kettlecorn, vm, {:message, term}}`. A Rust host
+      delivers it through `Vm::subscribe` or `VmOptions::events`.
     * `call/3` asks the host to do something and waits for the answer: a
-      *host call*. The host decides what `name` means, and answers with
-      `Kettlecorn.reply/3`.
+      *host call*. An Elixir host answers with `Kettlecorn.reply/3`. A Rust
+      host invokes the async function registered under `name` with
+      `VmOptions::register`.
 
-  The host sends messages to guest processes with `Kettlecorn.send/4`. They
-  arrive as `{:wasm, payload}`.
+  An Elixir host sends messages to guest processes with `Kettlecorn.send/4`;
+  they arrive as `{:wasm, payload}`. Both APIs can call and cast to registered
+  guest processes through the guest proxy.
 
   When the host advertises a frame size limit, `send/1` and `call/3` check a
   conservative estimate of the encoded frame size before sending. This check

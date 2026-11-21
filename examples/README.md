@@ -260,6 +260,8 @@ and exposes a controlled host operation without cooking an app.
 ## Rust projects
 
 Run the recipes in this section from the repository root inside `nix develop`.
+The recipes use the runtime built from the checkout. For discovery and
+installation in your own Rust project, see the [Rust setup guide](../rust/README.md).
 
 ### Hello world
 

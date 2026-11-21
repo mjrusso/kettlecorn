@@ -3,32 +3,41 @@
 Each VM gets a private, writable copy of the runtime's `root/` mounted at
 `/` (the source runtime is never written). It gets only the
 environment variables Kettlecorn passes, and stdio. The guest cannot start
-OS processes or load native code. Wasmtime enforces the limits:
+OS processes or load native code. These guest restrictions apply to both
+host APIs and the CLI. The Elixir host and CLI run VMs in separate launcher
+processes; Rust embeds VMs in the application process.
 
-| Option (`Kettlecorn.start_link/1`) | `kettlecorn-run` | Wasmtime |
-|---|---|---|
-| `max_memory: bytes` (default 512 MiB) | `--max-memory` | `StoreLimits` |
-| `max_lifetime: ms` | `--timeout 2s` | epoch interruption and a deadline |
-| `max_fuel: n` (CPU budget, ~instructions) | `--fuel` | fuel |
-| `network: true`: TCP/UDP, DNS, TLS | `--network` | inherited network and DNS |
-| `http: true`: outgoing HTTP via `wasi:http` | `--http` | HTTP linker, runs `beam-http.wasm` |
+Wasmtime enforces these limits and grants:
 
-The CLI sets no resource limits unless you pass the corresponding options.
+| Elixir option (`Kettlecorn.start_link/1`) | Rust field (`VmOptions`) | `kettlecorn-run` | Enforcement |
+|---|---|---|---|
+| `max_memory: bytes` | `max_memory: Some(bytes)` | `--max-memory` | WebAssembly linear memory limit |
+| `max_lifetime: ms` | `max_lifetime: Some(duration)` | `--timeout 2s` | Epoch interruption and a deadline |
+| `max_fuel: n` | `max_fuel: Some(n)` | `--fuel` | Execution budget, roughly WebAssembly instructions |
+| `network: true` | `network: true` | `--network` | Socket and DNS permissions |
+| `http: true` | `http: true` | `--http` | HTTP linker, runs `beam-http.wasm` |
+
+Both APIs default to a 512 MiB WebAssembly memory limit. Fuel and lifetime
+limits default to `:infinity` in Elixir and `None` in Rust. Rust durations
+use `std::time::Duration`; Elixir lifetime values are milliseconds. The CLI
+sets no resource limits unless you pass the corresponding options.
 
 Set finite `max_fuel` and `max_lifetime` limits for untrusted workloads;
-both default to `:infinity` in the host API. Fuel limits guest execution,
-not the number of bytes delivered to the host.
+fuel limits guest execution, not the number of bytes delivered to the host.
 
 ## Reusing VMs
 
 Give mutually untrusted tenants separate VMs. Modules, processes, ETS
 tables, application configuration, and files persist between evaluations.
-A new evaluation process does not reset the VM. Use `Kettlecorn.run/2`
-for an evaluation in a fresh VM, or stop a tenant's VM before replacing it.
+A new evaluation process does not reset the VM. In Elixir, use
+`Kettlecorn.run/2` for an evaluation in a fresh VM. In Rust, start a new VM
+and call `Vm::shutdown` when finished.
 
 ## Managing VM lifetime
 
-Choose the relationship between the VM and the host process that uses it:
+### Elixir processes
+
+Choose the relationship between the VM and the Elixir process that uses it:
 
 | API or option | Lifetime behavior |
 |---|---|
@@ -66,7 +75,24 @@ releases request tracking and capacity, even for an infinite timeout. It does
 not cancel guest work already submitted. Use `stop_with` or stop the VM to
 end that work when the caller leaves.
 
+### Rust tasks
+
+`Runtime::start` returns a `Vm` backed by a Tokio task. Dropping the `Vm`
+requests cancellation. `Vm::shutdown` cancels execution and waits for the
+task and private-filesystem cleanup to finish.
+
+Dropping an individual request future skips a write that has not started;
+it does not cancel guest work already submitted. A written request can keep
+its capacity slot after the caller stops waiting. See
+[request delivery](architecture.md#request-delivery) for deadlines and accounting.
+
+`VmOptions::boot_timeout` bounds preparation and boot. `max_lifetime` starts
+with guest execution, after runtime preparation and filesystem copying.
+
 ## Output and messages
+
+The following capture, owner, and queue rules describe the Elixir host.
+Rust delivery is described under [Rust output and requests](#rust-output-and-requests).
 
 ### Captured and console output
 
@@ -112,10 +138,28 @@ VM termination fails pending requests with `{:error, {:vm_down, reason}}`.
 Use OS-level limits on the host BEAM process for a hard memory cap. See
 [host transport](architecture.md#elixir-host-transport) for queueing and framing details.
 
+### Rust output and requests
+
+`Vm::eval` returns captured stdout in `Evaluation::output`, including on a
+script error. Console stdout and stderr use the optional bounded channels
+in `VmOptions::stdout` and `VmOptions::stderr`; full channels drop chunks.
+Guest messages use a broadcast channel. Slow receivers get a lag count
+when messages are overwritten, and do not acknowledge events.
+
+Rust defaults to 16 pending requests to the guest and four host calls from
+the guest. `VmOptions::max_pending_requests` and `VmOptions::max_host_calls`
+control those limits. Requests wait for capacity within their deadline;
+host-call overload can produce an error reply or a guest timeout. These
+budgets are separate from the Elixir host's defaults above. See
+[Rust request delivery](architecture.md#request-delivery) and
+[guest callbacks](architecture.md#guest-callbacks) for details.
+
 ## Disk use
 
 Guest writes have no disk quota. Put `instances_dir` on a size-limited
-filesystem to prevent guests from filling the host's disk.
+filesystem to prevent guests from filling the host's disk. Rust VMs create
+their private filesystems under the system temporary directory; put that
+directory on a size-limited filesystem when disk use must be bounded.
 
 ## Network grants
 
@@ -123,14 +167,21 @@ Without either grant, socket and DNS operations are denied and
 `Kettlecorn.HTTP` is unavailable. **The grants allow any reachable destination:**
 Kettlecorn has no destination allowlist, so a granted VM can reach internal
 services, `127.0.0.1`, and cloud metadata endpoints. Expose selected operations
-as host calls (`Kettlecorn.Host.call/3`, answered with `Kettlecorn.reply/3`),
-or confine the launcher process at the OS level.
+as host calls through `Kettlecorn.Host.call/3`. An Elixir host answers with
+`Kettlecorn.reply/3`; a Rust host uses functions registered with
+`VmOptions::register`. OS-level network confinement applies to the launcher
+for Elixir/CLI VMs and to the application process for embedded Rust VMs.
 
 See [HTTP and Req](running-applications.md#http-and-req) for how the grants
-select Req's adapter, and which CA certificates each uses. With
-`network: true`, the guest gets a copy of the host's CA certificates
+select Req's adapter, and which CA certificates each uses. With the Elixir
+API's `network: true`, the guest gets a copy of the host's CA certificates
 unless `:cacerts` says otherwise. They're public, but they tell the guest
 which private CAs the host trusts.
+
+The CLI selects a host CA bundle for its network grant. Embedded Rust VMs
+do not import host CA certificates automatically. The HTTP grant uses
+Wasmtime's compiled Mozilla roots in all execution modes; it does not use
+the guest's CA bundle. See [CA certificates](architecture.md#ca-certificates).
 
 ## Evaluation timeouts
 
@@ -138,7 +189,13 @@ which private CAs the host trusts.
 the evaluation and attempts to kill its descendants while keeping the VM.
 Guest code can disable descendant tracing; use whole-VM limits to bound it.
 
+Rust's `EvalOptions::timeout` sets the guest evaluation timeout and defaults
+to five seconds. Both APIs derive additional proxy and reply deadlines;
+see the [protocol specification](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md#host--vm).
+
 ## Process isolation
+
+### Elixir host and CLI
 
 Each VM runs in its own launcher process. A launcher crash ends that VM
 without crashing the host BEAM, though a link can propagate the exit to its
@@ -148,13 +205,21 @@ if confirmation fails, it retains the directory and logs an error.
 
 The memory cap covers WebAssembly linear memory. Use OS limits for total RSS,
 and namespaces, seccomp, or cgroups when the launcher needs additional
-confinement. Guest execution uses one OS thread; compilation and WASI operations
+confinement. Guest execution uses one OS thread at a time; compilation and WASI operations
 can use helper threads. See [VM lifecycle](architecture.md#elixir-vm-lifecycle) for
 root preparation, cancellation, and termination records.
 
+### Rust host
+
+Rust VMs execute as Tokio tasks inside the application process. WebAssembly
+memory and capability restrictions still apply. There is no per-VM OS
+process; OS-level resource limits apply to the whole Rust application.
+`Vm::shutdown` waits for execution and private-filesystem cleanup.
+See [Threads](architecture.md#threads) for scheduling and parallelism.
+
 ## Compilation cache
 
-The launcher caches native compiled components under
+The shared Rust engine caches native compiled components under
 `$XDG_CACHE_HOME/kettlecorn/components`, or `~/.cache/kettlecorn/components` on
 Linux and `~/Library/Caches/kettlecorn/components` on macOS. The directory must
 be owned by the current user and have no group or other permissions. Entries
@@ -168,8 +233,9 @@ and engine compatibility hash. Writes use temporary files and atomic rename.
 Cache failures fall back to compilation. Old entries are evicted to keep the
 cache at 256 MiB; active loaded components remain valid after eviction.
 
-Use `compile_cache: false` to disable caching or `cache_dir: path` to choose a
-private directory. `bin/kettlecorn-launch` accepts `--no-cache` and `--cache-dir`.
+In Elixir, use `compile_cache: false` to disable caching or `cache_dir: path`
+to choose a private directory. `bin/kettlecorn-launch` accepts `--no-cache`
+and `--cache-dir`. The Rust public API uses the default cache location.
 The first use compiles in memory and populates the cache; release archives ship
 portable `.wasm`, since native artifacts also depend on CPU and engine settings.
 
@@ -178,7 +244,8 @@ prepared components in memory for in-process embedding.
 
 ## Compatibility
 
-* Guest execution uses one OS thread; CPU-heavy guests use one core.
+* Each guest executes on one OS thread at a time; more BEAM schedulers add
+  no parallelism within a VM.
 * No distribution, `:inets` or `:ssh` in the guest.
 * Release targets are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`
   (Apple silicon). Intel macOS (`x86_64-darwin`) is not supported.

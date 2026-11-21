@@ -128,13 +128,16 @@ and checks local HTML links and fragments. It runs in CI on Linux.
 
 CI is [`.github/workflows/kettlecorn.yml`](https://github.com/mjrusso/kettlecorn/blob/main/.github/workflows/kettlecorn.yml):
 `nix flake check` and `just test-apps` on Linux and macOS, and `just lint typecheck docs`
-and `just test-rust-examples` on Linux, on every push and pull request. The Rust
-example suite runs Pulse Field with the runtime from the current checkout and
-without a display. To run those tests directly, use `just test-pulse-field`.
+on Linux on every push and pull request. Both platforms run
+`just test-runtime-cache ARCHIVE` against a locally built release archive.
+The recipe runs the Rust installer tests and verifies publication and cache
+loading in both languages without a download. The Linux checks job also runs
+`just test-rust-examples`, which runs Pulse Field with the current runtime
+and without a display. To run those tests directly, use `just test-pulse-field`.
 
 See [AGENTS.md](https://github.com/mjrusso/kettlecorn/blob/main/AGENTS.md)
 for code invariants and required validation when changing the project, and
-[RELEASING.md](https://github.com/mjrusso/kettlecorn/blob/main/RELEASING.md) for publishing the runtime and Hex package.
+[RELEASING.md](https://github.com/mjrusso/kettlecorn/blob/main/RELEASING.md) for publishing the runtime, Hex package, and Rust crate.
 
 See [performance](performance.md) for local benchmark commands.
 

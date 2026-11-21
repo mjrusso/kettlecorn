@@ -351,7 +351,7 @@ handling in the guest and launcher.
 
 ## Runtime releases
 
-A release has two parts with the same version:
+The runtime archives, Hex package, and Rust crate share a release version.
 
 * **The runtime archives** `kettlecorn-runtime-<version>-<system>.tar.gz` on
   release `v<version>`, for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`.
@@ -360,9 +360,13 @@ A release has two parts with the same version:
   The script CLI needs Bash.
 * **The Hex package** `kettlecorn`: the library and Mix tasks. The installer
   selects the platform archive and verifies its SHA-256 against
-  `priv/checksums.txt` before replacing the installation symlink.
+  `priv/checksums.txt` before installing it in the cache.
+* The `kettlecorn` Rust crate uses the same versioned runtime cache as the Hex
+  package. With the `installer` feature, `Runtime::install` verifies the
+  platform archive against the checksum shipped with the crate. See the
+  [Rust setup guide](https://github.com/mjrusso/kettlecorn/blob/main/rust/README.md).
 
 The [runtime manifest](architecture.md#runtime-manifest) records the
 protocol version, imported WASI interfaces, and tested Wasmtime version.
 See [RELEASING.md](https://github.com/mjrusso/kettlecorn/blob/main/RELEASING.md)
-for building and publishing the archive and Hex package.
+for building and publishing the archives and both packages.

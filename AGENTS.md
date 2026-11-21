@@ -82,8 +82,10 @@ results outside the source tree. The [performance guide](host/guides/performance
 describes the suites and how to run them locally.
 
 CI (`.github/workflows/kettlecorn.yml`) runs `nix flake check` and `just test-apps`
-on Linux and macOS, and `just lint typecheck docs` on Linux, on every push and
-pull request.
+on Linux and macOS on every push and pull request. Both platforms run
+`just test-runtime-cache` against a locally built release archive, including
+the Rust unit tests with the `installer` feature. The Linux checks job also
+runs `just lint typecheck docs` and `just test-rust-examples`.
 
 ## Invariants
 
@@ -129,10 +131,13 @@ pull request.
 
 ## Releases
 
-`RELEASING.md` describes them: the runtime archive on the GitHub release
-(tag `v<version>`, built by the `release` job in
-`.github/workflows/kettlecorn.yml`)
-and the Hex package from `host/`. The version is `host/VERSION`. Bump
+`RELEASING.md` covers the GitHub runtime archives, the Hex package from
+`host/`, and the crates.io package from `rust/`. The `release` job in
+`.github/workflows/kettlecorn.yml` builds and publishes the runtime archives
+for tag `v<version>`.
+Run `just release-checksums <version>` after the archives are published to
+record the same checksums in `host/priv/checksums.txt` and `rust/checksums.txt`.
+Keep `host/VERSION` and the crate version in `rust/Cargo.toml` in sync. Bump
 the protocol version, `host/PROTOCOL_VERSION`, for any incompatible protocol
 change: the library refuses runtimes with another one.
 
@@ -148,8 +153,9 @@ change: the library refuses runtimes with another one.
   `nix flake check` after each. A new OTP release must match the host Erlang
   in nixpkgs, and every patch must still apply.
 - To update Wasmtime, edit the three exact `=` pins in `rust/Cargo.toml`,
-  run `cargo update --manifest-path rust/Cargo.toml -p wasmtime`, refresh
-  the source hash in `flake.nix`, run `just docs-versions`, then run
+  run `cargo update -p wasmtime` with each manifest
+  (`rust/Cargo.toml` and `examples/rust/*/Cargo.toml`), refresh the
+  source hash in `flake.nix`, run `just docs-versions`, then run
   `nix flake check`. Keep the version in the fetched source's name so a stale
   hash cannot reuse another release's source tree.
 - After editing `guest/hex/mix.exs`, run `just update-guest-deps` to refresh
