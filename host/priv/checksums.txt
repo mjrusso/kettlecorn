@@ -1,3 +1,3 @@
-daa84982b463af92cfb021b2e93c6b2d9be31adf24a6790f21e0086bb0d082de  kettlecorn-runtime-0.1.0-aarch64-darwin.tar.gz
-e29560c31b2cc218d8a659f5c3c18dba00625f1de90e027a68ad1fe41c3b0c1a  kettlecorn-runtime-0.1.0-aarch64-linux.tar.gz
-0cacb840599b79ffc61c9eb7f09734ab260ce4fc1f34c13fe45d89b52a1d99ba  kettlecorn-runtime-0.1.0-x86_64-linux.tar.gz
+e0728dfc1fbfd168f1b6dbd413df05814bc6eb339fa63bd2b8c4c14643053e78  kettlecorn-runtime-0.2.0-aarch64-darwin.tar.gz
+6295da5d73486f3f67ee1d1b8d7c756981c6b2534357b97a2017e9897ee230a2  kettlecorn-runtime-0.2.0-aarch64-linux.tar.gz
+95082200130de89a2b90507b8f5cd407fbf98e991bb106041a26942e3190662b  kettlecorn-runtime-0.2.0-x86_64-linux.tar.gz
