@@ -15,7 +15,7 @@ The same interpreter runs in the guest BEAM, isolated from the host by
 Wasmtime. See [sandbox and resource limits](../guides/sandbox.md) for the
 available memory, time, and execution limits.
 
-Run the cells in order on x86_64 or ARM64 Linux or Apple silicon macOS.
+Requires x86_64 or ARM64 Linux or Apple silicon macOS.
 The host must use the runtime's OTP major release and exact Elixir version
 because it compiles Lua's BEAM files.
 

@@ -10,12 +10,9 @@ Use a sandboxed VM to run user code, load plugins, and test submissions.
 Start with [Getting started](getting-started.livemd)
 and [Working with guest VMs](working-with-guests.livemd) for the APIs.
 
-[Network access](network.livemd) is an independent follow-on.
-The separate [Validating guest data](guest-data.livemd) notebook covers
-constructors and nested results.
+See [Network access](network.livemd) for socket and HTTP grants.
 
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
-Run the cells in order.
 
 ```elixir
 {:ok, runtime} = Kettlecorn.Install.runtime()

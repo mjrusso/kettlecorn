@@ -13,8 +13,9 @@ isolation, and limits. The **host** is this Livebook runtime; the **guest**
 is the OTP system running inside Wasmtime.
 
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
-Run the cells in order. Kettlecorn is experimental; bugs in it or its
-dependencies may compromise isolation. Read [sandbox and resource limits](../guides/sandbox.md)
+
+Kettlecorn is experimental; bugs in it or its dependencies may compromise
+isolation. Read [sandbox and resource limits](../guides/sandbox.md)
 before using it with untrusted workloads.
 
 ## Install the runtime
@@ -199,8 +200,7 @@ reason
 
 ## Stop the VM
 
-Modules, processes, ETS tables, and files persist between evaluations. Give
-mutually untrusted tenants separate VMs. Stop a VM when you have finished:
+Give mutually untrusted tenants separate VMs. Stop a VM when you have finished:
 
 ```elixir
 Kettlecorn.stop(vm)

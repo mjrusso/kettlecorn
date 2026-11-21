@@ -7,11 +7,9 @@ Mix.install([{:kettlecorn, "~> 0.1.0"}])
 ## About this notebook
 
 Compare denied network access, raw sockets, and HTTP requests. Read
-[Getting started](getting-started.livemd) first. This notebook is independent
-of the other notebooks.
+[Getting started](getting-started.livemd) first.
 
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
-Run the cells in order.
 
 ```elixir
 {:ok, runtime} = Kettlecorn.Install.runtime()

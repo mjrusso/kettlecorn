@@ -15,7 +15,7 @@ launcher process. Rust embeds the engine in the application process; see
 the [architecture guide](../guides/architecture.md#rust-execution-api) for that API.
 
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
-Run the cells in order.
+
 Some cells use internal modules and data structures, including the protocol
 decoder and VM state, which can change between versions; the
 [getting started notebook](getting-started.livemd) covers the public API.
@@ -90,7 +90,6 @@ Kettlecorn.Sandbox.Instance.command(instance)
 ```
 
 The host passes limits, grants and guest options to the bundled launcher.
-The Rust library reads the fixed guest arguments and environment from `launch/`.
 `Kettlecorn.VM` adds a private `--output-socket` path when opening the port and
 requests one record of at most 64 KiB at a time, before decoding guest frames.
 

@@ -12,7 +12,6 @@ constructor, then extend it to nested containers and ISO dates. Read
 boundary and returned values.
 
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
-Run the cells in order.
 
 ```elixir
 {:ok, runtime} = Kettlecorn.Install.runtime()

@@ -12,7 +12,6 @@ Start with [Getting started](getting-started.livemd) for installation,
 evaluation, isolation, and resource limits.
 
 Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
-Run the cells in order.
 
 ```elixir
 {:ok, runtime} = Kettlecorn.Install.runtime()
@@ -95,7 +94,6 @@ end
 
 ## Host calls
 
-A host call lets the guest ask the host for something it can't do itself.
 The guest calls `Kettlecorn.Host.call/3` and waits; the owner gets
 `{:host_call, reply_to, name, args}` and answers with `Kettlecorn.reply/3`:
 
