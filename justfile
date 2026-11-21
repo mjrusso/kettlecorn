@@ -121,6 +121,16 @@ test-pulse-field:
 notebooks:
     {{runtime}} && cd host && for nb in notebooks/*.livemd; do mix run scripts/livebook_test.exs "$nb" || exit 1; done
 
+# Run the local verification suite. Needs `just deps`.
+check: flake-check ci
+
+[private]
+ci: lint typecheck docs test-apps test-rust-examples
+
+# Run the flake's sandboxed checks.
+flake-check:
+    nix flake check -L
+
 # Rust/Nix/Elixir formatting, unused dependencies, Credo and Reach. Needs `just deps`.
 lint:
     cargo fmt --manifest-path rust/Cargo.toml -- --check
@@ -246,9 +256,6 @@ test-runtime-cache archive:
 # Builds the checks, the release archive and the dev shell; uploads them to Cachix.
 cache-push:
     cachix watch-exec kettlecorn -- sh -c 'nix flake check --accept-flake-config && nix build --accept-flake-config --no-link .#release && nix develop --accept-flake-config -c true'
-
-# CI checks that run outside `nix flake check`.
-ci: lint typecheck docs test-apps test-rust-examples
 
 # Install Hex, fetch host development dependencies, and build the runtime.
 deps:

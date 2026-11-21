@@ -76,15 +76,10 @@ LICENSE                Apache-2.0; third-party components have separate notices
 
 ## Checks
 
-Inside the development shell:
-
-```sh
-just lint typecheck
-just notebooks
-just test
-nix flake check
-just docs
-```
+Run `just check` from the development shell after setting up dependencies with
+`just deps`. It runs the flake checks, lint, type checks, docs, and cooked-app
+and Rust example tests. Use `just flake-check` to run `nix flake check -L` on
+its own.
 
 `lint` checks Rust, Nix and Elixir formatting, unused dependencies, Credo with
 ExSlop and ExDNA, and the host's architecture rules. `typecheck` compiles
@@ -111,17 +106,12 @@ Runtime-dependent recipes build the working tree's runtime and set
 build loop passes that path to its cooking helper. Listing recipes, linting,
 and formatting do not build the runtime.
 
-`nix flake check` runs the native C stdio tests, host tests and notebook cells
-in the Nix sandbox. It also checks the CLI (scripts, `-e`, and IEx) and the
-[generated versions table](#pinned-versions). It copies the device monitor
-bundle to a new directory and runs it there.
-It verifies that the Rust protocol version matches `host/PROTOCOL_VERSION`.
-The cooked Mix examples run separately with `just test-apps`.
-`nix/cli-tests.nix` runs the executable test harnesses in `tests/cli/`.
-The CLI and host checks include the platform's `ps` package in their sandbox
-inputs to verify process cleanup on Linux and macOS.
-CI runs `just test-apps` outside the sandbox on Linux and macOS. Core host tests,
-native stdio tests, and notebooks run once per OS in `nix flake check`.
+The flake checks run the native C stdio tests, host tests, notebook cells, and
+CLI tests for scripts, `-e`, and IEx in the Nix sandbox. They also verify the
+[generated versions table](#pinned-versions), compare the Rust protocol version
+with `host/PROTOCOL_VERSION`, and run the device monitor from a relocated
+bundle. The CLI and host checks use `ps` to verify process cleanup on Linux
+and macOS.
 
 `just docs` builds ExDoc into `host/doc/`, rejects documentation warnings,
 and checks local HTML links and fragments. It runs in CI on Linux.
