@@ -118,6 +118,7 @@ for them:
 | `:boot_ready` | `embedded_api` | `Kettlecorn.Boot`, once the applications have started |
 | `:boot_failed` | | `Kettlecorn.Boot`; the reason goes to stderr and the VM exits |
 | `:proxy_reply` | `id`, `result` | `Kettlecorn.Proxy`, answering a call (see below) |
+| `:late_load` | `module` (binary) | `Kettlecorn.Preload`, when the code server loads a module on demand after preload |
 
 The Rust client requires `embedded_api: 1` in `:boot_ready`. Version 1
 supports evaluation value limits. When a proxy reply exceeds the advertised

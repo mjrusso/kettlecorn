@@ -1,9 +1,11 @@
 defmodule Kettlecorn.Boot do
   @moduledoc false
-  # Both launchers use this boot sequence: guest app, extra apps, cooked
+  # Both launchers use this boot sequence: cooked code paths and
+  # configuration, preload if requested, guest app, extra apps, cooked
   # entrypoint, then boot_ready.
 
   alias Kettlecorn.Event
+  alias Kettlecorn.Preload
 
   @cooked_app "/app/app"
   @cooked_config ~c"/app/sys.config"
@@ -27,6 +29,7 @@ defmodule Kettlecorn.Boot do
 
     with :ok <- load_cacerts(),
          {:ok, entrypoint} <- cooked_app(),
+         :ok <- Preload.run(Preload.mode()),
          nil <- Enum.find_value(apps ++ entrypoint, &start_failure/1) do
       Event.send(%{event: :boot_ready, embedded_api: 1})
     else
@@ -101,8 +104,28 @@ defmodule Kettlecorn.Boot do
 
   def cli do
     start()
+    if Preload.mode() != :off, do: last_exit_hook()
     :elixir.start_cli()
     :erlang.halt()
+  end
+
+  # Kernel.CLI runs exit hooks newest first. Append this hook so earlier
+  # hooks can still trigger late-load reports before we flush them.
+  defp last_exit_hook,
+    do: :elixir_config.update(:at_exit, fn hooks -> List.insert_at(hooks, -1, &exit_hook/1) end)
+
+  # Hooks registered during this batch run in the next one. Wait until
+  # they finish before flushing the reporter and halting.
+  defp exit_hook(status) do
+    case :elixir_config.get(:at_exit) do
+      [] ->
+        if Code.loaded?(Logger), do: Logger.flush()
+        Preload.flush()
+        System.halt(status)
+
+      _ ->
+        last_exit_hook()
+    end
   end
 
   defp start_failure(app) do

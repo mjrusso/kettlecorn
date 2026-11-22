@@ -227,7 +227,17 @@ runtime's launch files. Embedded Rust VMs also set
 `KETTLECORN_MAX_GUEST_FRAME_BYTES` to advertise the frame size limit to the guest.
 `Kettlecorn.Boot.start/0` reads the applications from the `-kettlecorn_apps`
 init argument and applies the cooked configuration before starting them.
-Scripts and IEx invoke this boot sequence before their user code runs.
+With `-kettlecorn_preload on` or `strict`, `Kettlecorn.Preload` then loads
+each module that `code:all_available/0` lists, sorted by name, with
+`code:ensure_loaded/1`. OTP chooses each module's file from the code path,
+and a module that an earlier `on_load` function loaded is skipped.
+`code:prepare_loading/1` and `code:ensure_modules_loaded/1` prepare modules
+in parallel, which would make the atom table's order vary, so preload loads
+one module at a time. Without framing, late loads are reported on stderr,
+because the bridge drops event frames.
+Scripts and IEx invoke this boot sequence before their user code runs. With
+preload, a script's last exit hook waits until the reporter has handled
+every late load, so a strict-mode report can't be lost when the CLI halts.
 
 The engine's internal API separates preparation from execution.
 `Runtime::prepare` is synchronous and serializes compilation across clones
@@ -289,7 +299,7 @@ cancellation checks.
 
 Kettlecorn's patches follow Popcorn's stack, with one patch per theme:
 the WASI platform layer, cooperative threads, the stdio bridge, sockets
-and DNS, and the terminal. See the
+and DNS, the terminal, and late-load reporting. See the
 [patch list](https://github.com/mjrusso/kettlecorn/blob/main/patches/README.md).
 The platform patch includes `c/include/kettlecorn_platform.h` through OTP's
 `sys.h`. It defines `KETTLECORN_WASM` for the shared browser/WASI restrictions.
@@ -323,6 +333,16 @@ and emulator flags. The feature patches add these integration points:
   `c/src/platform.c` owns the busy scheduler's yield counter and interval.
 * `prim_tty.erl` supports raw terminal mode without terminfo
   (see [Interactive IEx](#interactive-iex)).
+* `code_server.erl` marks the loader action of a load that arrives from
+  `code:ensure_loaded/1`, which autoloading also uses, and keeps the mark
+  in its `on_load` record while an `on_load` function runs. Once that load
+  has succeeded, it sends `{kettlecorn_late_load, Module}` to the pid stored
+  under the `persistent_term` key `kettlecorn_late_load`. A load that fails
+  is not reported. The hook only reads the term and sends a message, so it
+  cannot itself need the code server. A
+  `{kettlecorn_late_load_barrier, Ref}` request sends the pid a barrier
+  message after the reports before it. `Kettlecorn.Preload` stores the pid
+  after preloading (see [preloading modules](sandbox.md#preloading-modules)).
 
 The native bootstrap embeds the copied `wasm` and patched preloaded modules
 (`erl_init`, `prim_inet`); it only calls `wasm:on_load/0` from `wasm`. Its
