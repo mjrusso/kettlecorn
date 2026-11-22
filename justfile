@@ -154,13 +154,17 @@ format:
     cd host && mix format && mix format {{extra_elixir}}
 
 # Benchmark startup and workloads (BENCH_TIME sets seconds per scenario).
-bench: bench-startup bench-workloads bench-rust
+bench: bench-startup bench-workloads bench-memory bench-rust
 
 bench-startup:
     {{runtime}} && cd host && MIX_ENV=bench mix run bench/startup.exs
 
 bench-workloads:
     {{runtime}} && cd host && MIX_ENV=bench mix run bench/workloads.exs
+
+# Memory per idle launcher process (Linux; BENCH_VMS sets the VM count).
+bench-memory:
+    {{runtime}} && cd host && MIX_ENV=bench mix run bench/memory.exs
 
 # Benchmark the Rust embedding API in an optimized build.
 bench-rust:

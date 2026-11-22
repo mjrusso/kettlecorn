@@ -13,10 +13,11 @@ From the repository root, inside `nix develop`:
 ```sh
 just bench-startup
 just bench-workloads
+just bench-memory
 just bench-rust
 ```
 
-`just bench` runs all three suites. `BENCH_TIME` sets seconds per scenario for
+`just bench` runs all four suites. `BENCH_TIME` sets seconds per scenario for
 the Elixir benchmarks. `BENCH_SAMPLES` sets how many calls the Rust benchmark
 measures per operation per round.
 
@@ -41,6 +42,13 @@ evaluation, and programs compiled on both sides. Compiled guest programs use
 the BEAM interpreter in WebAssembly; native programs use the host JIT.
 Source evaluation uses `erl_eval` on both sides. Guest timings include the
 host/guest round trip.
+
+### Memory
+
+`host/bench/memory.exs` starts `BENCH_VMS` VMs (default 8) and reports the
+mean resident set size (RSS), private memory, and proportional set size
+(PSS) per launcher process. PSS divides shared pages among the processes
+that map them. The benchmark reads Linux's `/proc/<pid>/smaps_rollup`.
 
 ### Rust embedding
 
