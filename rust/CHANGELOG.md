@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+* Add `Vm::stats`, which reports fuel consumed (when `max_fuel` is set) and
+  linear memory.
+
 ## 0.2.0
 
 Initial experimental Rust release:

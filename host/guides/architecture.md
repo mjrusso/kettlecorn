@@ -173,6 +173,17 @@ capacity sets how many messages it retains.
 `VmOptions::stderr` forwards guest and transport diagnostics, including during boot.
 Both send to caller-supplied bounded channels and drop chunks when full.
 
+### Resource use
+
+`Vm::stats` reports fuel consumed since the VM started, including boot, and
+the linear memory allocated. Fuel is metered only when `max_fuel` is set. A
+call hook samples both each time the guest calls into the host. A guest
+waits only in host calls, so the counts omit at most the work since its
+latest I/O. The resource limiter holds an allowed memory growth until the
+next sample or growth, so a growth that Wasmtime fails to allocate is never
+reported. The memory figure excludes compiled code and Wasmtime's own
+allocations.
+
 ### Guest values
 
 The Rust decoder keeps atoms as strings and supports binaries, numbers,

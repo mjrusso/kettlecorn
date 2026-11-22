@@ -5,6 +5,7 @@ mod installed;
 mod root;
 mod runtime;
 pub(crate) mod streams;
+mod usage;
 
 pub(crate) use cache::CompilationCache;
 pub(crate) use root::RootOptions;
@@ -13,6 +14,7 @@ pub(crate) use runtime::GuestOptions;
 pub(crate) use runtime::Mode;
 pub use runtime::Runtime;
 pub(crate) use tokio_util::sync::CancellationToken as Cancellation;
+pub(crate) use usage::Usage;
 
 use anyhow::Result;
 use std::path::Path;
@@ -21,8 +23,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
+use usage::Limits;
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline};
+use wasmtime::{CallHook, Config, Engine, Store, StoreLimitsBuilder, Trap, UpdateDeadline};
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::{I32Exit, WasiCtx, WasiCtxView, WasiView};
 
@@ -92,7 +95,7 @@ pub(crate) struct PreparedRuntime {
 struct State {
     ctx: WasiCtx,
     table: ResourceTable,
-    limits: StoreLimits,
+    limits: Limits,
     #[cfg(feature = "http")]
     http: wasmtime_wasi_http::WasiHttpCtx,
 }
@@ -254,15 +257,25 @@ impl PreparedRuntime {
             State {
                 ctx: builder.build(),
                 table: ResourceTable::new(),
-                limits: limits.build(),
+                limits: Limits::new(limits.build(), options.usage.clone()),
                 #[cfg(feature = "http")]
                 http: wasmtime_wasi_http::WasiHttpCtx::new(),
             },
         );
         store.limiter(|state| &mut state.limits);
-        if let Some(fuel) = options.max_fuel {
-            store.set_fuel(fuel)?;
+        let budget = options.max_fuel;
+        if let Some(budget) = budget {
+            store.set_fuel(budget)?;
         }
+        // Usage changes only while WebAssembly runs, and a running guest
+        // waits only in host calls, so sampling there keeps it current.
+        let usage = options.usage.clone();
+        store.call_hook(move |store, transition| {
+            if matches!(transition, CallHook::CallingHost) {
+                usage.sample(budget, store);
+            }
+            Ok(())
+        });
         let stopped = cancel.clone();
         store.epoch_deadline_callback(move |_| {
             if stopped.is_cancelled() || deadline.is_some_and(|end| Instant::now() >= end) {
@@ -271,8 +284,10 @@ impl PreparedRuntime {
             Ok(UpdateDeadline::Yield(1))
         });
         store.set_epoch_deadline(1);
+        let usage = options.usage.clone();
         let execution = async {
             let command = Command::instantiate_async(&mut store, component, &linker).await?;
+            usage.instantiated();
             let result = store
                 .run_concurrent(async move |store| command.wasi_cli_run().call_run(store).await)
                 .await??;
@@ -286,6 +301,7 @@ impl PreparedRuntime {
             _ = expiration(deadline.map(Into::into)) => Ok(ExecutionOutcome::Timeout),
             result = execution => result,
         };
+        options.usage.sample(options.max_fuel, &store);
         match result {
             Err(_) if cancel.is_cancelled() => Ok(ExecutionOutcome::Cancelled),
             Err(error) => match error.downcast_ref::<Trap>() {

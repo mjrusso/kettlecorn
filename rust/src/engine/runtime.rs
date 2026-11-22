@@ -1,4 +1,4 @@
-use super::{CompilationCache, Preparation, RootOptions, WASMTIME_VERSION, root};
+use super::{CompilationCache, Preparation, RootOptions, Usage, WASMTIME_VERSION, root};
 use crate::Error;
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -41,6 +41,8 @@ pub(crate) struct GuestOptions {
     /// Permit synchronous filesystem operations. Keep false when polling on a
     /// UI thread or when cancellation must interrupt pending filesystem I/O.
     pub blocking_filesystem: bool,
+    /// Counters the execution updates while it runs.
+    pub usage: Arc<Usage>,
 }
 
 impl GuestOptions {
@@ -61,6 +63,7 @@ impl GuestOptions {
             emulator_flags: Vec::new(),
             cache: CompilationCache::default(),
             blocking_filesystem: false,
+            usage: Arc::default(),
         }
     }
 }

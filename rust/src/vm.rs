@@ -1,7 +1,8 @@
 mod transport;
 
 use crate::engine::{
-    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, RootOptions, streams::Streams,
+    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, RootOptions, Usage,
+    streams::Streams,
 };
 use crate::protocol::{self, Value};
 use crate::{Error, Runtime};
@@ -184,6 +185,20 @@ impl fmt::Display for ScriptError {
 
 impl std::error::Error for ScriptError {}
 
+/// Resources a VM has used, from [`Vm::stats`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Stats {
+    /// Fuel consumed since the VM started, including boot. Updated each time the
+    /// guest calls into the host, so it omits only the computation since the
+    /// guest's latest I/O or wait. `None` without [`VmOptions::max_fuel`]: fuel is
+    /// metered only when it is limited.
+    pub fuel_consumed: Option<u64>,
+    /// Bytes of WebAssembly linear memory allocated. Linear memory does not shrink.
+    /// The VM's compiled code and Wasmtime's own allocations are not included.
+    pub memory: usize,
+}
+
 /// A running Kettlecorn VM.
 ///
 /// A VM allocates up to `u32::MAX` request IDs for evals, calls, and casts.
@@ -194,6 +209,8 @@ pub struct Vm {
     client: transport::Client,
     task: JoinHandle<Result<()>>,
     cancel: Cancellation,
+    usage: Arc<Usage>,
+    metered: bool,
 }
 
 impl Runtime {
@@ -256,6 +273,9 @@ impl Runtime {
 
     async fn start_vm(&self, options: VmOptions) -> Result<Vm> {
         let runtime = self.clone();
+        let usage = Arc::<Usage>::default();
+        let metered = options.max_fuel.is_some();
+        let guest_usage = usage.clone();
         let (root, guest, prepared) = tokio::task::spawn_blocking(move || {
             let root = tempfile::tempdir().context("create private VM directory")?;
             let guest = GuestOptions {
@@ -269,6 +289,7 @@ impl Runtime {
                     protocol::MAX_FRAME_BYTES.to_string(),
                 )]
                 .into(),
+                usage: guest_usage,
                 ..GuestOptions::new(root.path().join("root"))
             };
             runtime.populate_root(
@@ -322,6 +343,8 @@ impl Runtime {
             client,
             task,
             cancel,
+            usage,
+            metered,
         };
         if ready.await.is_err() {
             let error = vm
@@ -428,6 +451,14 @@ impl Vm {
     /// gets `broadcast::error::RecvError::Lagged` with the number it missed.
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.client.subscribe()
+    }
+
+    /// Reports the fuel and memory the VM has used so far.
+    pub fn stats(&self) -> Stats {
+        Stats {
+            fuel_consumed: self.metered.then(|| self.usage.fuel()),
+            memory: self.usage.memory(),
+        }
     }
 
     /// Cancels the guest and waits for execution and private-root cleanup.

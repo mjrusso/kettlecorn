@@ -45,7 +45,7 @@ tempfile = "3"
 tokio = { version = "1.51", features = ["rt", "net", "io-util", "sync", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls", "platform-verifier"], optional = true }
-wasmtime = { version = "=50.0.2", default-features = false, features = ["anyhow", "std", "runtime", "cranelift", "parallel-compilation", "component-model-async", "threads"] }
+wasmtime = { version = "=50.0.2", default-features = false, features = ["anyhow", "std", "runtime", "cranelift", "parallel-compilation", "component-model-async", "threads", "call-hook"] }
 wasmtime-wasi = { version = "=50.0.2", default-features = false, features = ["p3"] }
 wasmtime-wasi-http = { version = "=50.0.2", optional = true, default-features = false, features = ["p3", "default-send-request"] }
 

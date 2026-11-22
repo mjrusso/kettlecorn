@@ -369,3 +369,29 @@ async fn oversized_guest_frames_leave_the_vm_running() {
     );
     vm.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn stats_report_fuel_consumed_and_linear_memory() {
+    let Some(directory) = std::env::var_os("KETTLECORN_TEST_RUNTIME") else {
+        return;
+    };
+    let runtime = Runtime::load(directory).unwrap();
+    let unmetered = runtime.start(VmOptions::default()).await.unwrap();
+    let stats = unmetered.stats();
+    assert_eq!(stats.fuel_consumed, None);
+    assert!(stats.memory > 0);
+    unmetered.shutdown().await.unwrap();
+
+    let mut options = VmOptions::default();
+    options.max_fuel = Some(u64::MAX);
+    let vm = runtime.start(options).await.unwrap();
+    let booted = vm.stats().fuel_consumed.unwrap();
+    assert!(booted > 0);
+    let evaluation = vm
+        .eval("Enum.sum(1..1_000_000)", EvalOptions::default())
+        .await
+        .unwrap();
+    assert!(evaluation.result.is_ok());
+    assert!(vm.stats().fuel_consumed.unwrap() > booted);
+    vm.shutdown().await.unwrap();
+}
