@@ -21,6 +21,20 @@ pub(crate) enum Mode {
     },
 }
 
+/// How the VM preloads modules at boot and handles later on-demand loads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Preload {
+    /// Use OTP's default loading behavior.
+    #[default]
+    Off,
+    /// Load modules on the boot-time code path in name order, skipping those
+    /// already loaded. A preload failure aborts boot. Report later on-demand loads.
+    On,
+    /// Preload as in `On` and stop the VM on a later on-demand load.
+    Strict,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct GuestOptions {
     pub root: PathBuf,
@@ -34,6 +48,7 @@ pub(crate) struct GuestOptions {
     pub schedulers: usize,
     pub env: BTreeMap<String, String>,
     pub apps: Vec<String>,
+    pub preload: Preload,
     pub code_paths: Vec<String>,
     pub emulator_flags: Vec<String>,
     /// Persistent cache used by `Runtime::prepare`, never by execution.
@@ -59,6 +74,7 @@ impl GuestOptions {
             schedulers: 1,
             env: BTreeMap::new(),
             apps: Vec::new(),
+            preload: Preload::Off,
             code_paths: Vec::new(),
             emulator_flags: Vec::new(),
             cache: CompilationCache::default(),
@@ -246,6 +262,11 @@ impl Runtime {
         args.extend(options.apps.clone());
         if options.network {
             args.push("-kettlecorn_network".into());
+        }
+        match options.preload {
+            Preload::Off => {}
+            Preload::On => args.extend(["-kettlecorn_preload".into(), "on".into()]),
+            Preload::Strict => args.extend(["-kettlecorn_preload".into(), "strict".into()]),
         }
         match &options.mode {
             #[cfg(any(feature = "cli", test))]

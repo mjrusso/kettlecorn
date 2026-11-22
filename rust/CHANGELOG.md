@@ -8,6 +8,10 @@
   `vm.shutdown().await.result?`.
 * Add `Vm::stats`, which reports fuel consumed (when `max_fuel` is set) and
   linear memory.
+* Add `VmOptions::preload`. `Preload::On` loads every module on the code path
+  while the VM boots and sends the names of modules loaded on demand
+  afterwards to `VmOptions::late_loads`; `Preload::Strict` stops the VM on
+  such a load.
 * Launcher processes share cached compiled code. The first start after
   upgrading recompiles the runtime.
 

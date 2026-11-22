@@ -39,6 +39,7 @@ pub(crate) enum Event<'a> {
         token: Vec<u8>,
     },
     RejectedHostCall(Vec<u8>),
+    LateLoad(String),
 }
 
 pub(crate) fn event(frame: &[u8]) -> Result<Option<Event<'_>>> {
@@ -71,6 +72,7 @@ fn message(payload: &[u8]) -> Result<Option<Event<'static>>> {
         token,
         data,
         embedded_api,
+        module,
     ] = etf::envelope(
         payload,
         [
@@ -83,6 +85,7 @@ fn message(payload: &[u8]) -> Result<Option<Event<'static>>> {
             b"reply_to",
             b"data",
             b"embedded_api",
+            b"module",
         ],
     )?;
     let kind = kind.context("missing envelope type")?.atom()?;
@@ -92,6 +95,10 @@ fn message(payload: &[u8]) -> Result<Option<Event<'static>>> {
                 embedded_api.and_then(|api| api.unsigned().ok()),
             )),
             "boot_failed" => Some(Event::BootFailed),
+            "late_load" => Some(Event::LateLoad(
+                std::str::from_utf8(module.context("missing late-loaded module")?.binary()?)?
+                    .to_owned(),
+            )),
             "proxy_reply" => Some(Event::Reply {
                 id: id.context("missing proxy reply ID")?.unsigned()?,
                 result: result

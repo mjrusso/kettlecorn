@@ -1,4 +1,4 @@
-use kettlecorn::{EvalOptions, Language, Runtime, Value, VmOptions};
+use kettlecorn::{EvalOptions, Language, Preload, Runtime, Value, VmOptions};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -397,6 +397,65 @@ async fn stats_report_fuel_consumed_and_linear_memory() {
     let shutdown = vm.shutdown().await;
     shutdown.result.unwrap();
     assert!(shutdown.stats.fuel_consumed.unwrap() >= evaluated);
+}
+
+// Writes an Erlang module that no VM has loaded to a new code path
+// directory, then calls it so the code server loads it on demand.
+const LATE_LOAD: &str = r#"
+forms = [
+  {:attribute, 1, :module, :kettlecorn_late},
+  {:attribute, 1, :export, [answer: 0]},
+  {:function, 1, :answer, 0, [{:clause, 1, [], [], [{:integer, 1, 42}]}]}
+]
+{:ok, :kettlecorn_late, beam} = :compile.forms(forms)
+File.mkdir_p!("/tmp/late")
+File.write!("/tmp/late/kettlecorn_late.beam", beam)
+:code.add_patha(~c"/tmp/late")
+:kettlecorn_late.answer()
+"#;
+
+#[tokio::test]
+async fn preload_reports_modules_loaded_on_demand() {
+    let Some(directory) = std::env::var_os("KETTLECORN_TEST_RUNTIME") else {
+        return;
+    };
+    let runtime = Runtime::load(directory).unwrap();
+    let (late_loads, mut received) = tokio::sync::mpsc::channel(4);
+    let mut options = VmOptions::default();
+    options.preload = Preload::On;
+    options.late_loads = Some(late_loads);
+    let vm = runtime.start(options).await.unwrap();
+    let evaluation = vm.eval(LATE_LOAD, EvalOptions::default()).await.unwrap();
+    assert_eq!(evaluation.result.unwrap().value, Some(Value::from(42)));
+    let module = tokio::time::timeout(Duration::from_secs(5), received.recv()).await;
+    assert_eq!(module.unwrap().as_deref(), Some("kettlecorn_late"));
+    vm.shutdown().await.result.unwrap();
+}
+
+#[tokio::test]
+async fn strict_preload_reports_the_late_load_and_stops_the_guest() {
+    let Some(directory) = std::env::var_os("KETTLECORN_TEST_RUNTIME") else {
+        return;
+    };
+    let runtime = Runtime::load(directory).unwrap();
+    let (late_loads, mut received) = tokio::sync::mpsc::channel(4);
+    let mut options = VmOptions::default();
+    options.preload = Preload::Strict;
+    options.late_loads = Some(late_loads);
+    let vm = runtime.start(options).await.unwrap();
+    // The evaluation can reply before the reporter halts the guest.
+    let _ = vm.eval(LATE_LOAD, EvalOptions::default()).await;
+    let module = tokio::time::timeout(Duration::from_secs(5), received.recv()).await;
+    assert_eq!(module.unwrap().as_deref(), Some("kettlecorn_late"));
+    let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+        while vm.eval("1", EvalOptions::default()).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(stopped.is_ok(), "the guest did not stop");
+    let error = vm.shutdown().await.result.unwrap_err();
+    assert!(format!("{error:#}").contains("guest stopped"), "{error:#}");
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ use crate::engine::{
     streams::Streams,
 };
 use crate::protocol::{self, Value};
-use crate::{Error, Runtime};
+use crate::{Error, Preload, Runtime};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -77,6 +77,13 @@ pub struct VmOptions {
     /// Receives guest stderr and Kettlecorn diagnostics, including during boot.
     /// Without a sender, stderr is discarded. Full channels discard chunks.
     pub stderr: Option<mpsc::Sender<Vec<u8>>>,
+    /// Selects a preload mode. Defaults to [`Preload::Off`].
+    pub preload: Preload,
+    /// Receives the name of each module, such as `"Elixir.Mod"`, that the guest
+    /// loads on demand after preload. Without a sender, each one is reported as a
+    /// stderr diagnostic. Full channels discard names. The guest can send these
+    /// events itself, so treat them as guest data.
+    pub late_loads: Option<mpsc::Sender<String>>,
     functions: HashMap<String, HostFunction>,
 }
 
@@ -97,6 +104,8 @@ impl Default for VmOptions {
             events: None,
             stdout: None,
             stderr: None,
+            preload: Preload::Off,
+            late_loads: None,
             functions: HashMap::new(),
         }
     }
@@ -302,6 +311,7 @@ impl Runtime {
                 )]
                 .into(),
                 usage: guest_usage,
+                preload: options.preload,
                 ..GuestOptions::new(root.path().join("root"))
             };
             runtime.populate_root(
@@ -345,7 +355,11 @@ impl Runtime {
                     accepting,
                     callbacks,
                     options.frame_write_timeout,
-                    transport::Output { stdout, stderr },
+                    transport::Output {
+                        stdout,
+                        stderr,
+                        late_loads: options.late_loads,
+                    },
                     exited,
                 );
                 tokio::pin!(transport);

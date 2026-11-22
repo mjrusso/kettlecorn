@@ -182,6 +182,7 @@ pub(super) struct Callbacks {
 pub(super) struct Output {
     pub stdout: Option<mpsc::Sender<Vec<u8>>>,
     pub stderr: Option<mpsc::Sender<Vec<u8>>>,
+    pub late_loads: Option<mpsc::Sender<String>>,
 }
 
 impl Output {
@@ -318,6 +319,12 @@ pub(super) async fn run(
                             }
                         }
                         Some(Event::BootFailed) => bail!("guest applications failed to boot"),
+                        Some(Event::LateLoad(module)) => match &output.late_loads {
+                            Some(sender) => {
+                                let _ = sender.try_send(module);
+                            }
+                            None => output.diagnostic(format_args!("{module} was loaded after preload")),
+                        },
                         Some(Event::Undecodable(error)) if !reported_decode_error => {
                             output.diagnostic(format_args!("could not decode guest message: {error}"));
                             reported_decode_error = true;

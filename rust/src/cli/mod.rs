@@ -2,8 +2,8 @@ mod fd;
 mod terminal;
 
 use crate::engine::{
-    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, Mode, RootOptions, Runtime,
-    Usage, WASMTIME_VERSION, streams::Streams,
+    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, Mode, Preload, RootOptions,
+    Runtime, Usage, WASMTIME_VERSION, streams::Streams,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -88,6 +88,10 @@ struct Args {
     /// Set a guest environment variable as NAME=value; may be repeated
     #[arg(long = "env", value_parser = environment)]
     env: Vec<(String, String)>,
+    /// Preload modules on the boot-time code path (on), or also stop the guest
+    /// on a later on-demand load (strict)
+    #[arg(long, value_parser = preload)]
+    preload: Option<Preload>,
     /// Start an extra application at boot; may be repeated
     #[arg(long = "app")]
     apps: Vec<String>,
@@ -109,6 +113,14 @@ struct Args {
     /// Guest Elixir arguments, such as -e CODE or a script path
     #[arg(last = true)]
     args: Vec<String>,
+}
+
+fn preload(value: &str) -> Result<Preload, String> {
+    match value {
+        "on" => Ok(Preload::On),
+        "strict" => Ok(Preload::Strict),
+        _ => Err("preload must be on or strict".into()),
+    }
 }
 
 fn environment(value: &str) -> Result<(String, String), String> {
@@ -210,6 +222,7 @@ async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
     options.schedulers = args.schedulers;
     options.env = args.env.into_iter().collect::<BTreeMap<_, _>>();
     options.apps = args.apps;
+    options.preload = args.preload.unwrap_or_default();
     options.code_paths = args.code_paths;
     options.emulator_flags = args.emulator_flags;
     options.blocking_filesystem = options.max_lifetime.is_none();

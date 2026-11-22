@@ -12,7 +12,7 @@ pub(crate) use root::RootOptions;
 pub(crate) use runtime::GuestOptions;
 #[cfg(any(feature = "cli", test))]
 pub(crate) use runtime::Mode;
-pub use runtime::Runtime;
+pub use runtime::{Preload, Runtime};
 pub(crate) use tokio_util::sync::CancellationToken as Cancellation;
 pub(crate) use usage::Usage;
 

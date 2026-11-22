@@ -366,6 +366,79 @@ async fn a_full_writer_keeps_reply_dispatch_and_deadlines_running() {
 }
 
 #[tokio::test]
+async fn after_the_guest_exits_forwards_buffered_output_and_ignores_requests_for_it() {
+    let (mut guest, peer) = tokio::io::duplex(1024);
+    guest
+        .write_all(&protocol::message_frame(vec![
+            (Value::atom("type"), Value::atom("kettlecorn")),
+            (Value::atom("event"), Value::atom("boot_ready")),
+            (
+                Value::atom("embedded_api"),
+                Value::Integer(protocol::EMBEDDED_API.into()),
+            ),
+        ]))
+        .await
+        .unwrap();
+    guest
+        .write_all(&protocol::host_call_frame("ping", 0))
+        .await
+        .unwrap();
+    guest
+        .write_all(&protocol::message_frame(vec![
+            (Value::atom("type"), Value::atom("kettlecorn")),
+            (Value::atom("event"), Value::atom("late_load")),
+            (Value::atom("module"), Value::binary("kettlecorn_late")),
+        ]))
+        .await
+        .unwrap();
+    drop(guest);
+    let (client, inbox) = Client::new(16, None);
+    let (ready, boot) = oneshot::channel();
+    let served = Arc::new(AtomicUsize::new(0));
+    let calls = served.clone();
+    let callback: HostFunction = Arc::new(move |_| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async { Ok(Value::atom("ok")) })
+    });
+    let (exit, exited) = oneshot::channel();
+    let (late_loads, mut received) = mpsc::channel(1);
+    // Writing this queued request to the closed stream would fail.
+    let request = tokio::spawn(async move {
+        client
+            .request(
+                Instant::now() + Duration::from_secs(5),
+                Duration::ZERO,
+                true,
+                |_| Ok(vec![7; 4]),
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    exit.send(()).unwrap();
+    let session = tokio::spawn(run(
+        peer,
+        inbox,
+        ready,
+        Callbacks {
+            functions: HashMap::from([("ping".into(), callback)]),
+            deadline: Duration::from_secs(1),
+            capacity: 4,
+        },
+        Duration::from_secs(5),
+        Output {
+            late_loads: Some(late_loads),
+            ..Output::default()
+        },
+        exited,
+    ));
+    session.await.unwrap().unwrap();
+    assert_eq!(received.try_recv().as_deref(), Ok("kettlecorn_late"));
+    assert!(request.await.unwrap().is_err());
+    assert!(boot.await.is_err());
+    assert_eq!(served.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn guest_exit_aborts_pending_callbacks() {
     struct Dropped(Arc<AtomicUsize>);
     impl Drop for Dropped {
