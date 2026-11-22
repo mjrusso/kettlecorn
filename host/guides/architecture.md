@@ -54,10 +54,23 @@ VMs use the same cleanup function when they stop.
 Closing the port cancels execution, including a stalled output writer. Closing
 stdin cancels framed guests even when input is backlogged; raw EOF remains guest
 input for scripts. The stdin watcher explicitly requests `POLLHUP`, which macOS
-requires to report closure with unread input. Cleanup waits for the launcher's
-atomically published JSON termination record before deleting the private root.
-The record identifies exit, cancellation, timeout, fuel exhaustion, or failure.
-Stderr supplies diagnostics; guest fatal frames retain priority.
+requires to report closure with unread input. The launcher atomically
+publishes a JSON termination record before it exits. The record identifies
+exit, cancellation, timeout, fuel exhaustion, or failure, and holds the final
+stats. Stderr supplies diagnostics; guest fatal frames retain priority.
+
+Stopping has three steps, in order:
+
+1. The host waits for shutdown. It's confirmed when the launcher has exited,
+   or when the host closed the port and the termination record appeared
+   within five seconds. Otherwise the shutdown is unconfirmed.
+2. The host sends the owner `{:stopped, stats}`, with the record's stats, or
+   `nil` when there is no record, as after an unconfirmed shutdown. The owner
+   may process the event after cleanup.
+3. After confirmed shutdown, the host removes the private directory. If
+   shutdown is unconfirmed, it keeps the directory and logs its path.
+
+`Kettlecorn.stop/1` returns, and the VM process exits, after step 3.
 
 The termination record is outside the guest root. Stderr does not determine
 the outcome; a missing result falls back to the process exit status.
@@ -184,8 +197,10 @@ resource limiter holds an allowed memory growth until the next sample or
 growth, so a growth that Wasmtime fails to allocate is never reported. The
 memory figure excludes compiled code and Wasmtime's own allocations.
 
-With `--stats`, the launcher also publishes the same counts in a mapped
-file. Its termination record carries the final counts.
+The launcher publishes the same counts for `Kettlecorn.stats/1` in a
+mapped file in the VM's private directory (`--stats`). Its termination
+record carries the final counts, which the host sends in the owner's
+`{:stopped, stats}` event.
 
 ### Guest values
 

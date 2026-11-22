@@ -56,6 +56,18 @@ defmodule Kettlecorn do
 
   @type vm :: GenServer.server()
 
+  @typedoc """
+  A VM's resource use. `fuel_consumed` counts fuel since the VM started, including
+  boot, and is nil when `:max_fuel` is `:infinity`. `memory` is the guest's linear
+  memory in bytes; it never shrinks. `rss` is the launcher process's resident set
+  size in bytes, on Linux only; it is nil on other systems.
+  """
+  @type stats :: %{
+          fuel_consumed: non_neg_integer() | nil,
+          memory: non_neg_integer(),
+          rss: non_neg_integer() | nil
+        }
+
   @doc """
   Starts a VM linked to the caller and waits until it has booted.
 
@@ -319,6 +331,22 @@ defmodule Kettlecorn do
   """
   @spec take_output(vm()) :: binary()
   def take_output(vm), do: GenServer.call(vm, :take_output)
+
+  @doc """
+  Returns the VM's resource use. See `t:stats/0`.
+
+  The launcher samples fuel when the guest calls the host and at epoch
+  checks, which run at 10 ms intervals. After `eval/3` or `call/4` returns,
+  the sample includes work up to the reply. On shutdown the owner receives
+  `{:kettlecorn, vm, {:stopped, stats}}`. The stats are `nil` if the launcher
+  exits without reporting them. See
+  [Measuring resource use](sandbox.html#measuring-resource-use).
+  """
+  @spec stats(vm()) :: {:ok, stats()} | {:error, term()}
+  def stats(vm) do
+    {instance, os_pid} = GenServer.call(vm, :stats_source)
+    VM.Stats.read(instance, os_pid)
+  end
 
   @doc "Stops the VM and its launcher process."
   @spec stop(vm()) :: :ok

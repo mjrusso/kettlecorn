@@ -80,7 +80,7 @@ defmodule Kettlecorn.LauncherTest do
   end
 
   test "abrupt launcher death uses the exit status without interpreting stderr" do
-    {:ok, vm} = Kettlecorn.start(TestRuntime.opts())
+    {:ok, vm} = Kettlecorn.start(TestRuntime.opts(owner: self()))
     on_exit(fn -> Kettlecorn.stop(vm) end)
     monitor = Process.monitor(vm)
     state = :sys.get_state(vm)
@@ -88,6 +88,9 @@ defmodule Kettlecorn.LauncherTest do
     File.write!(Instance.stderr_file(state.instance), diagnostics)
     {:os_pid, pid} = Port.info(state.port, :os_pid)
     {_, 0} = System.cmd("kill", ["-KILL", to_string(pid)])
+
+    # The launcher could not report final usage.
+    assert_receive {:kettlecorn, ^vm, {:stopped, nil}}, 5_000
 
     assert_receive {:DOWN, ^monitor, :process, ^vm,
                     {:shutdown, {:vm_down, {:exit_status, 137, ^diagnostics}}}},

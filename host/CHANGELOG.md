@@ -6,6 +6,12 @@
   install the matching runtime with `mix kettlecorn.install` and cook
   applications again.
 
+* `Kettlecorn.stats/1` reports fuel use, linear memory, and launcher RSS
+  on Linux.
+* Owners receive `{:kettlecorn, vm, {:stopped, stats}}` when a VM stops.
+  The event contains final fuel and memory, or `nil` if the launcher
+  exited without reporting them.
+
 ## 0.2.0
 
 * Support embedding VMs in Rust applications through the `kettlecorn` crate.

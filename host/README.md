@@ -89,7 +89,8 @@ The example sets two limits for the whole VM:
 | `max_fuel` | Total execution budget, measured roughly in WebAssembly instructions. |
 | `max_lifetime: 30_000` | Lifetime of 30 seconds. |
 
-Both include startup and apply across all evaluations in that VM.
+Both include startup and apply across all evaluations in that VM. Use
+`Kettlecorn.stats(vm)` to read fuel and memory while it runs.
 
 `start_link/1` links the VM to its caller: a resource limit or guest crash can
 terminate that caller. `Kettlecorn.run/2` starts a fresh VM, evaluates code
@@ -108,7 +109,8 @@ Pass `language: :erlang` to `Kettlecorn.eval/3` for expressions or module source
 ### Guest events
 
 With `owner: pid`, consume guest events and call `Kettlecorn.acknowledge(vm)`
-after each one. Exceeding the unacknowledged event count or byte budget stops
+after each one. The final `{:stopped, stats}` event needs no acknowledgement.
+Exceeding the unacknowledged event count or byte budget stops
 the VM. See [sandbox and resource limits](guides/sandbox.md) for delivery
 budgets and host memory and disk controls.
 

@@ -43,6 +43,10 @@ defmodule Kettlecorn.Sandbox.Instance do
   @spec stderr_file(t()) :: Path.t()
   def stderr_file(%__MODULE__{dir: dir}), do: Path.join(dir, "stderr")
 
+  @doc "The file the launcher keeps the VM's fuel and memory use in."
+  @spec stats_file(t()) :: Path.t()
+  def stats_file(%__MODULE__{dir: dir}), do: Path.join(dir, "stats")
+
   @doc "Deletes the VM's private directory."
   @spec cleanup(t()) :: :ok
   def cleanup(%__MODULE__{dir: dir}) do
@@ -101,6 +105,8 @@ defmodule Kettlecorn.Sandbox.Instance do
         "--framed",
         "--stderr",
         Path.join(dir, "stderr"),
+        "--stats",
+        Path.join(dir, "stats"),
         "--max-memory",
         to_string(s.max_memory),
         "--schedulers",

@@ -31,6 +31,7 @@ defmodule Kettlecorn.VM do
   alias Kettlecorn.Sandbox.Instance
   alias Kettlecorn.VM.Output
   alias Kettlecorn.VM.Requests
+  alias Kettlecorn.VM.Termination
 
   @options_schema NimbleOptions.new!(
                     owner: [
@@ -40,7 +41,10 @@ defmodule Kettlecorn.VM do
                       PID that receives `{:kettlecorn, vm_pid, event}` for console output (`{:stdout,
                       data}`, `{:stderr, data}`), messages (`{:message, term}`) and host calls
                       (`{:host_call, reply_to, name, args}`). Acknowledge events with
-                      `Kettlecorn.acknowledge/2` after handling them.
+                      `Kettlecorn.acknowledge/2` after handling them. When a started VM stops,
+                      the owner receives `{:stopped, stats}` once, with the final
+                      `Kettlecorn.stats/1` values and `rss: nil`, or `stats: nil` if the
+                      launcher exited without reporting them. It needs no acknowledgement.
                       Standard output captured by `Kettlecorn.eval/3` appears in its
                       result; writes to stderr arrive as console events.
                       """
@@ -117,6 +121,7 @@ defmodule Kettlecorn.VM do
     :events,
     :output_transport,
     exit_status: nil,
+    termination: nil,
     failure: nil,
     input: :queue.new(),
     input_bytes: 0,
@@ -273,6 +278,16 @@ defmodule Kettlecorn.VM do
     end
   end
 
+  def handle_call(:stats_source, _from, state) do
+    os_pid =
+      case state.port && Port.info(state.port, :os_pid) do
+        {:os_pid, os_pid} -> os_pid
+        _ -> nil
+      end
+
+    {:reply, {state.instance, os_pid}, state}
+  end
+
   def handle_call(:take_output, _from, state) do
     output = state.output |> Enum.reverse() |> IO.iodata_to_binary()
     {:reply, output, %{state | output: [], output_size: 0}}
@@ -366,49 +381,52 @@ defmodule Kettlecorn.VM do
     do: {:stop, {:shutdown, {:vm_down, reason}}, fail_all(state, {:vm_down, reason})}
 
   defp finish_output(%{exit_status: status, output_transport: %{socket: nil}} = state)
-       when status != nil,
-       do: down(state, down_reason(status, state))
+       when status != nil do
+    state = %{state | termination: Termination.read(state.instance)}
+    down(state, down_reason(status, state))
+  end
 
   defp finish_output(state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, state), do: cleanup(state)
+  def terminate(_reason, state), do: cleanup(state, true)
 
   defp cleanup(%Instance{} = instance), do: Instance.cleanup(instance)
+  defp cleanup(%__MODULE__{} = state), do: cleanup(state, false)
 
-  defp cleanup(%__MODULE__{} = state) do
+  defp cleanup(state, report_stopped?) do
     Output.cleanup(state.output_transport)
-    stop_launcher(state)
+
+    {confirmed, termination} = stop_launcher(state)
+    if report_stopped?, do: report_stopped(state, termination)
+
+    if confirmed do
+      cleanup(state.instance)
+    else
+      Logger.error("kettlecorn: launcher did not confirm shutdown; kept #{state.instance.dir}")
+    end
   end
 
-  defp stop_launcher(%__MODULE__{port: nil} = state), do: cleanup(state.instance)
+  # The launcher has exited: the record, if any, is final.
+  defp stop_launcher(%__MODULE__{port: nil, termination: nil} = state),
+    do: {true, Termination.read(state.instance)}
+
+  defp stop_launcher(%__MODULE__{port: nil} = state), do: {true, state.termination}
 
   defp stop_launcher(state) do
     # Normal port closure flushes queued input, which a stalled launcher may never read.
     :erlang.exit(state.port, :kill)
 
-    stopped = Instance.stderr_file(state.instance) <> ".stopped"
-    deadline = System.monotonic_time(:millisecond) + 5_000
-
-    if await_stopped(stopped, deadline),
-      do: cleanup(state.instance),
-      else:
-        Logger.error("kettlecorn: launcher did not confirm shutdown; kept #{state.instance.dir}")
-  end
-
-  defp await_stopped(path, deadline) do
-    cond do
-      File.regular?(path) ->
-        true
-
-      System.monotonic_time(:millisecond) >= deadline ->
-        false
-
-      true ->
-        Process.sleep(10)
-        await_stopped(path, deadline)
+    case Termination.await(state.instance, System.monotonic_time(:millisecond) + 5_000) do
+      {:ok, termination} -> {true, termination}
+      :timeout -> {false, %{outcome: nil, stats: nil}}
     end
   end
+
+  defp report_stopped(%{owner: nil}, _termination), do: :ok
+
+  defp report_stopped(state, %{stats: stats}),
+    do: send(state.owner, {:kettlecorn, self(), {:stopped, stats}})
 
   defp handle_frame({:stdout, data}, state, size), do: buffer_output(:stdout, data, state, size)
   defp handle_frame({:stderr, data}, state, size), do: buffer_output(:stderr, data, state, size)
@@ -545,17 +563,12 @@ defmodule Kettlecorn.VM do
   defp down_reason(_status, %{fatal: fatal}) when fatal != nil, do: {:fatal, fatal}
 
   defp down_reason(status, state) do
-    result =
-      with {:ok, data} <- File.read(Instance.stderr_file(state.instance) <> ".stopped"),
-           {:ok, result} <- JSON.decode(data),
-           do: result
-
-    case result do
-      %{"outcome" => "timeout"} -> :timeout
-      %{"outcome" => "out_of_fuel"} -> :out_of_fuel
-      %{"outcome" => "cancelled"} -> :normal
-      %{"outcome" => "exited", "code" => code} when is_integer(code) -> exit_reason(code, state)
-      _ -> exit_reason(status, state)
+    case state.termination.outcome do
+      :timeout -> :timeout
+      :out_of_fuel -> :out_of_fuel
+      :cancelled -> :normal
+      {:exited, code} -> exit_reason(code, state)
+      _failed_or_missing -> exit_reason(status, state)
     end
   end
 

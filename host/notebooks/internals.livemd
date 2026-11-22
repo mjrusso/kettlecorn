@@ -135,6 +135,11 @@ run on one OS thread.
 IO.puts(ps)
 ```
 
+`--stats` points to a file in the VM's private directory, outside the guest
+root. The launcher updates the file with fuel and linear memory usage.
+`Kettlecorn.stats/1` reads those values. See the
+[stats file layout](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md#launcher-stats).
+
 ## Frames
 
 The guest reads frames from its stdin and writes frames to its stdout. Each

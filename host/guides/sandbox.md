@@ -25,6 +25,25 @@ sets no resource limits unless you pass the corresponding options.
 Set finite `max_fuel` and `max_lifetime` limits for untrusted workloads;
 fuel limits guest execution, not the number of bytes delivered to the host.
 
+## Measuring resource use
+
+`Kettlecorn.stats/1` and `Vm::stats` report the fuel a VM has consumed since
+it started, including boot, and its WebAssembly linear memory. Fuel is
+reported only when `max_fuel` is set. The count is updated when the guest
+calls the host and on every 10 ms epoch tick while it runs, and it covers
+the work up to the reply of a completed `eval` or `call`. Linear memory
+never shrinks, so it is the most the guest has needed.
+
+`Kettlecorn.stats/1` also reports the launcher process's resident set size
+as `rss`, on Linux only; it is `nil` on macOS. When a VM with an `:owner`
+stops, the owner receives `{:kettlecorn, vm, {:stopped, stats}}` once, with
+the final fuel and memory and `rss: nil`, including after a timeout or
+running out of fuel. If the launcher exits without reporting stats, the
+event is `{:stopped, nil}`. This event needs no acknowledgement.
+
+In Rust, `Vm::shutdown` returns a `Shutdown` with the final `stats` and a
+`result`, which is an error if the guest had already stopped.
+
 ## Reusing VMs
 
 Give mutually untrusted tenants separate VMs. Modules, processes, ETS
