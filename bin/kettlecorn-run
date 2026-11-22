@@ -23,6 +23,8 @@
 #                       /etc/pki/tls/certs/ca-bundle.crt or /etc/ssl/cert.pem
 #   --http              allow outgoing HTTP to any destination via wasi:http
 #                       (beam-http.wasm), used by Kettlecorn.HTTP and Req
+#   --preload MODE      on preloads modules and reports later on-demand loads
+#                       on stderr. strict also stops the guest on such a load
 #   --runtime DIR       default $KETTLECORN_RUNTIME, else the runtime this
 #                       script is in (a release archive)
 #
@@ -37,6 +39,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 limits=()
 network=false
 http=false
+preload=""
 cacertfile=""
 app=""
 iex=false
@@ -70,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --network) network=true; shift ;;
         --cacertfile) cacertfile="$2"; shift 2 ;;
         --http) http=true; shift ;;
+        --preload) preload="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         --) shift; break ;;
         -e|--eval) break ;;
@@ -160,6 +164,7 @@ run_child "${runtime}/bin/kettlecorn-launch" "${prepare[@]}"
 options=(--runtime "${runtime}" --root "${root}")
 [[ "${network}" == true ]] && options+=(--network)
 [[ "${http}" == true ]] && options+=(--http)
+[[ -n "${preload}" ]] && options+=(--preload "${preload}")
 [[ "${iex}" == true ]] && options+=(--iex)
 if [[ "${iex}" == true && -t 0 && -t 1 ]]; then
     saved_tty="$(stty -g)"

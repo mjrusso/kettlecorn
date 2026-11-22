@@ -29,6 +29,34 @@ runCommand "kettlecorn-cli-tests"
     test "$cli_status" -eq 1
     test "$(tr -d '\r' < fatal.err | grep -cx kettlecorn-fatal-test)" -eq 1
     printf 'during boot\n' | kettlecorn-run -e 'IO.write(IO.gets(""))' | grep -x 'during boot'
+
+    # A module loaded on demand after preload is reported on stderr without
+    # framing, also when loading it is the script's last action.
+    cat > late.exs <<'EOF'
+    forms = [
+      {:attribute, 1, :module, :kettlecorn_late},
+      {:attribute, 1, :export, [answer: 0]},
+      {:function, 1, :answer, 0, [{:clause, 1, [], [], [{:integer, 1, 42}]}]}
+    ]
+    {:ok, :kettlecorn_late, beam} = :compile.forms(forms)
+    File.mkdir_p!("/tmp/late")
+    File.write!("/tmp/late/kettlecorn_late.beam", beam)
+    :code.add_patha(~c"/tmp/late")
+    :kettlecorn_late.answer()
+    EOF
+    kettlecorn-run --preload on late.exs 2> late.err
+    grep -Fx 'kettlecorn: kettlecorn_late was loaded after preload' late.err
+    cli_status=0
+    kettlecorn-run --preload strict late.exs 2> strict.err || cli_status=$?
+    test "$cli_status" -eq 1
+    grep -Fx 'kettlecorn: kettlecorn_late was loaded after preload' strict.err
+    # Also when an exit hook registers the hook that loads it.
+    sed '$d' late.exs > late-hook.exs
+    echo 'System.at_exit(fn _ -> System.at_exit(fn _ -> :kettlecorn_late.answer() end) end)' >> late-hook.exs
+    cli_status=0
+    kettlecorn-run --preload strict late-hook.exs 2> hook.err || cli_status=$?
+    test "$cli_status" -eq 1
+    grep -Fx 'kettlecorn: kettlecorn_late was loaded after preload' hook.err
     printf 'x = 6 * 7\nIO.puts("x=#{x}")\n' | kettlecorn-run --iex | grep -F 'x=42'
     printf ':ok\n' | kettlecorn-run --iex -e 'IO.puts(:iex_eval)' | grep -x iex_eval
     printf 'IO.puts(:iex_script)\n' > iex.exs

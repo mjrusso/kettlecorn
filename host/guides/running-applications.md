@@ -107,6 +107,9 @@ kettlecorn-run --max-memory 536870912 --fuel 50000000000 --timeout 30s script.ex
 
 `kettlecorn-run --help` is the authoritative list of options and their defaults.
 
+`--preload strict` loads modules at boot and exits with status 1 if a
+module later loads on demand. See [preloading modules](sandbox.md#preloading-modules).
+
 Network and HTTP grants default to off. Each grant allows any reachable
 destination. See [sandbox and resource limits](sandbox.md) and
 [HTTP and Req](#http-and-req) for grant and certificate behavior.
