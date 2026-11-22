@@ -104,6 +104,16 @@ defmodule Kettlecorn.Sandbox do
                       cooked app.
                       """
                     ],
+                    preload: [
+                      type: {:in, [false, true, :strict]},
+                      default: false,
+                      doc: """
+                      With `true` or `:strict`, load modules on the boot-time code path in name
+                      order, skipping those already loaded. A preload failure aborts boot. Later
+                      on-demand loads produce `{:late_load, "Elixir.Mod"}` owner events. `:strict`
+                      also stops the VM on such a load. See [preloading modules](sandbox.html#preloading-modules).
+                      """
+                    ],
                     env: [
                       type: {:custom, Options, :environment, []},
                       type_doc: "map or list of environment names to string values",
@@ -178,6 +188,7 @@ defmodule Kettlecorn.Sandbox do
           schedulers: pos_integer(),
           code_paths: [Path.t()],
           apps: [atom() | String.t()],
+          preload: boolean() | :strict,
           env: %{String.t() => String.t()},
           compile_cache: boolean(),
           cache_dir: Path.t() | nil,

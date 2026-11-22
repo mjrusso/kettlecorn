@@ -30,8 +30,8 @@ source tree.
 
 ### Startup
 
-`host/bench/startup.exs` measures VM start and stop with a warm cache and
-with compilation caching disabled. It also covers `Kettlecorn.run/2`,
+`host/bench/startup.exs` measures VM start and stop with a warm cache, with
+compilation caching disabled, and with `preload: true`. It also covers `Kettlecorn.run/2`,
 concurrent VM starts, the script CLI, and native `elixir -e` as a baseline.
 Startup includes root copying and guest boot.
 

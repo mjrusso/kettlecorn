@@ -101,6 +101,9 @@ defmodule Kettlecorn.Protocol do
   defp envelope(%{type: :kettlecorn, event: :proxy_reply, id: id, result: result}),
     do: {:proxy_reply, id, proxy_result(result)}
 
+  defp envelope(%{type: :kettlecorn, event: :late_load, module: module}) when is_binary(module),
+    do: {:late_load, module}
+
   defp envelope(%{type: :kettlecorn, event: _}), do: :unknown
   defp envelope(other), do: {:error, {:unknown_envelope, other}}
 

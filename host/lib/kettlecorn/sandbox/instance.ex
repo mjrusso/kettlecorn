@@ -118,9 +118,14 @@ defmodule Kettlecorn.Sandbox.Instance do
       env,
       Enum.flat_map(code_paths(s), fn {_, guest} -> ["--code-path", "/" <> guest] end),
       Enum.flat_map(s.apps, fn app -> ["--app", to_string(app)] end),
+      preload_args(s.preload),
       Enum.flat_map(s.emulator_flags, fn flag -> ["--emulator-arg", flag] end)
     ])
   end
+
+  defp preload_args(false), do: []
+  defp preload_args(true), do: ["--preload", "on"]
+  defp preload_args(:strict), do: ["--preload", "strict"]
 
   defp code_paths(s),
     do: Enum.with_index(s.code_paths, fn source, index -> {source, "code/#{index}"} end)

@@ -44,6 +44,38 @@ event is `{:stopped, nil}`. This event needs no acknowledgement.
 In Rust, `Vm::shutdown` returns a `Shutdown` with the final `stats` and a
 `result`, which is an error if the guest had already stopped.
 
+## Preloading modules
+
+OTP loads a module the first time code calls it. Which modules a VM has
+loaded, and the order of its atom table, then depend on what the guest ran
+first. On this runtime, the order in which atoms enter the table can
+affect map iteration, including `Map.keys/1` on a map with atom keys.
+With `preload: true` (`VmOptions::preload = Preload::On` in Rust,
+`--preload on` for the launcher and `kettlecorn-run`), the VM loads modules from
+its boot-time code path, including the cooked app's, in a fixed order.
+Preloading adds to startup time. The [performance guide](performance.md)
+shows how to measure it.
+
+After preload, the code server reports each module it loads on demand from
+the code path, for example from a directory the guest added. The owner
+receives `{:kettlecorn, vm, {:late_load, "Elixir.Mod"}}`, which it
+acknowledges like other events; without an owner, the host logs a warning.
+In Rust, names go to `VmOptions::late_loads` when configured, or to
+`VmOptions::stderr` when configured. Reports are dropped when the channel
+is full. `kettlecorn-run` writes to stderr.
+`preload: :strict` (`Preload::Strict`, `--preload strict`) also
+writes the module's name to the guest's stderr and stops the VM with exit
+status 1. Use it in tests.
+
+Binaries loaded with `:code.load_binary/3`, such as modules that evaluated
+code defines, and explicit `:code.load_file/1` calls are not reported. The
+guest can send `late_load` events itself or stop the reporting process, so
+treat late-load reports as guest data, not as an enforcement mechanism.
+
+The [Dune example](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#appsdune)
+combines strict preload with restrictions on calls that read the clock,
+use implicit random state, or observe other processes.
+
 ## Reusing VMs
 
 Give mutually untrusted tenants separate VMs. Modules, processes, ETS

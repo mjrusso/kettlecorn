@@ -40,7 +40,7 @@ defmodule Kettlecorn.VM do
                       doc: """
                       PID that receives `{:kettlecorn, vm_pid, event}` for console output (`{:stdout,
                       data}`, `{:stderr, data}`), messages (`{:message, term}`) and host calls
-                      (`{:host_call, reply_to, name, args}`). Acknowledge events with
+                      (`{:host_call, reply_to, name, args}`), and, with preloading enabled, modules loaded on demand (`{:late_load, "Elixir.Mod"}`). Acknowledge events with
                       `Kettlecorn.acknowledge/2` after handling them. When a started VM stops,
                       the owner receives `{:stopped, stats}` once, with the final
                       `Kettlecorn.stats/1` values and `rss: nil`, or `stats: nil` if the
@@ -447,6 +447,15 @@ defmodule Kettlecorn.VM do
     if state.owner,
       do: notify(state, {:host_call, reply_to, name, args}, size),
       else: reply_to_guest(state, reply_to, {:error, "no host handler"})
+  end
+
+  defp handle_frame({:late_load, module}, state, size) do
+    if state.owner do
+      notify(state, {:late_load, module}, size)
+    else
+      Logger.warning("kettlecorn: #{inspect(module)} was loaded after preload")
+      state
+    end
   end
 
   defp handle_frame(:boot_ready, %{boot: :booting} = state, _size),

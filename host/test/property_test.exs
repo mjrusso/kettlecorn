@@ -282,10 +282,20 @@ defmodule Kettlecorn.PropertyTest do
     for event <- [
           %{event: :future_event},
           %{event: :proxy_reply, id: 1},
-          %{event: :proxy_reply, result: {:ok, 1}}
+          %{event: :proxy_reply, result: {:ok, 1}},
+          %{event: :late_load},
+          %{event: :late_load, module: :not_a_binary}
         ] do
       frame = <<3, :erlang.term_to_binary(Map.put(event, :type, :kettlecorn))::binary>>
       assert Protocol.decode(frame, 1024) == :unknown
+    end
+  end
+
+  property "late loads carry the module name as a binary" do
+    check all(module <- binary()) do
+      envelope = %{type: :kettlecorn, event: :late_load, module: module}
+      frame = <<3, :erlang.term_to_binary(envelope)::binary>>
+      assert Protocol.decode(frame, 1024 * 1024) == {:late_load, module}
     end
   end
 

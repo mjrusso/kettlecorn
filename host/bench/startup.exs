@@ -27,6 +27,7 @@ Benchee.run(
       start_stop.(compile_cache: false)
     end,
     "VM start + stop, warm" => fn -> start_stop.([]) end,
+    "VM start + stop, warm, preload: true" => fn -> start_stop.(preload: true) end,
     "Kettlecorn.run/2: start, eval \"1 + 1\", stop" => fn ->
       {:ok, %{"value" => 2}} = Kettlecorn.run("1 + 1", runtime: runtime)
     end,
