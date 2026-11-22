@@ -15,6 +15,7 @@ introduced by another feature patch.
 | [`0103-stdio-bridge`](otp/0103-stdio-bridge.patch) | Connects the wasm NIF and `prim_tty` to the stdio bridge. See [`PROTOCOL.md`](../PROTOCOL.md). |
 | [`0104-sockets-dns`](otp/0104-sockets-dns.patch) | Restores inet sockets and sets the guest hostname to `localhost` without opening a UDP socket at boot. |
 | [`0106-terminal`](otp/0106-terminal.patch) | Enables `prim_tty` raw mode without terminfo for IEx line editing, history, and completion. |
+| [`0107-late-load`](otp/0107-late-load.patch) | Reports successful on-demand module loads and lets the CLI flush reports before exit. |
 
 ## OTP integration
 

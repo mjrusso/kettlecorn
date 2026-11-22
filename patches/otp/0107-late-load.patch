@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kettlecorn <kettlecorn@localhost>
+Date: Sun, 22 Nov 2026 12:00:00 -0500
+Subject: [PATCH] Late loads: report modules loaded on demand
+
+
+diff --git a/lib/kernel/src/code_server.erl b/lib/kernel/src/code_server.erl
+--- a/lib/kernel/src/code_server.erl
++++ b/lib/kernel/src/code_server.erl
+@@ -46,7 +46,7 @@
+                 path_cache = #{} :: #{integer() => #{string() => []}},
+ 		moddb :: ets:table(),
+ 		namedb :: ets:table(),
+-                on_load = #{} :: #{module() => {on_load_file(), client_pid(), on_load_pid()}},
++                on_load = #{} :: #{module() => {on_load_file(), client_pid(), on_load_pid(), on_demand()}},
+                 loading = #{} :: #{module() => [{loading_action(), client_pid()}]}}).
+ -type state() :: #state{}.
+ -type loading_action() :: load_module | get_object_code | finish_on_load.
+@@ -61,6 +61,8 @@
+ %% This pid() refers to the spawned process calling
+ %% 'erlang:call_on_load_function(Mod)'
+ -type on_load_pid() :: pid().
++%% Kettlecorn: whether the load came from code:ensure_loaded/1.
++-type on_demand() :: boolean().
+ 
+ -spec start_link([term()]) -> {'ok', pid()}.
+ start_link(Args) ->
+@@ -330,7 +332,12 @@
+ 
+ handle_call({load_ok,PC,Mod,File,Ref}, From, S) ->
+     erlang:demonitor(Ref, [flush]),
+-    {noreply, run_loader({load_module,PC,File,true}, From, Mod, S)};
++    {noreply, run_loader({load_module,PC,File,on_demand}, From, Mod, S)};
++
++%% Kettlecorn: the reporter receives this after every earlier report.
++handle_call({kettlecorn_late_load_barrier,Ref}, From, S) ->
++    report_late_load({kettlecorn_late_load_barrier, From, Ref}),
++    {reply,ok,S};
+ 
+ handle_call({load_error,Mod,Ref}, _From, S) ->
+     erlang:demonitor(Ref, [flush]),
+@@ -1285,7 +1292,7 @@
+         #{Mod := Waiting} ->
+             #state{on_load=OnLoad} = St0,
+             case OnLoad of
+-                #{Mod := {_, _, Pid}} ->
++                #{Mod := {_, _, Pid, _}} ->
+                     {reply, {error, deadlock}, St0};
+                 _ ->
+                     Loading = Loading0#{Mod := [{Action, Pid} | Waiting]},
+@@ -1335,7 +1342,9 @@
+             end
+     end;
+ 
+-handle_loader({load_module, PC, File, EnsureLoaded}, Pid, Mod, St0) ->
++handle_loader({load_module, PC, File, Origin}, Pid, Mod, St0) ->
++    EnsureLoaded = Origin =/= false,
++    OnDemand = Origin =:= on_demand,
+     case EnsureLoaded andalso erlang:module_loaded(Mod) of
+         true ->
+             {next, {module, Mod}, St0};
+@@ -1347,9 +1356,9 @@
+                 false ->
+                     case erlang:finish_loading([PC]) of
+                         ok ->
+-                            store_module_and_reply(File, Mod, St0);
++                            store_module_and_reply(File, Mod, OnDemand, St0);
+                         {on_load,[Mod]} ->
+-                            schedule_on_load(File, Pid, Mod, St0);
++                            schedule_on_load(File, Pid, Mod, OnDemand, St0);
+                         {Error, [Mod]} ->
+                             error_msg("Loading of ~ts failed: ~p\n", [File, Error]),
+                             {next, {error, Error}, St0}
+@@ -1357,20 +1366,21 @@
+             end
+     end;
+ 
+-handle_loader({finish_on_load, File, OnLoadRes}, _Pid, Mod, St0) ->
++handle_loader({finish_on_load, File, OnLoadRes, OnDemand}, _Pid, Mod, St0) ->
+     Keep = OnLoadRes =:= ok,
+     erts_code_purger:finish_after_on_load(Mod, Keep),
+     case Keep of
+         true ->
+-            store_module_and_reply(File, Mod, St0);
++            store_module_and_reply(File, Mod, OnDemand, St0);
+         false ->
+             _ = finish_on_load_report(Mod, OnLoadRes),
+             {next, {error, on_load_failure}, St0}
+     end.
+ 
+-store_module_and_reply(File, Mod, St0) ->
++store_module_and_reply(File, Mod, OnDemand, St0) ->
+     #state{moddb=Db, loading=Loading0} = St0,
+     ets:insert(Db, {Mod, File}),
++    OnDemand andalso report_late_load({kettlecorn_late_load, Mod}),
+     %% Optimization: go ahead and notify all get_object_code
+     %% loader actions that it has succeeded.
+     Waiting = lists:filter(fun
+@@ -1383,7 +1393,16 @@
+     Loading = maps:put(Mod, Waiting, Loading0),
+     {next, {module, Mod}, St0#state{loading=Loading}}.
+ 
+-schedule_on_load(File, Pid, Mod, St0) ->
++%% Kettlecorn: after the guest preloads its code, it stores a pid under this
++%% key to hear about modules loaded on demand. Sending is all this does, so
++%% it cannot itself need the code server.
++report_late_load(Message) ->
++    case persistent_term:get(kettlecorn_late_load, undefined) of
++        undefined -> ok;
++        Pid -> Pid ! Message, ok
++    end.
++
++schedule_on_load(File, Pid, Mod, OnDemand, St0) ->
+     %% We use a separate state for on_load because we
+     %% need to track them for abort_if_pending_on_load
+     %% and we also need to be able to detect deadlocks.
+@@ -1394,13 +1413,13 @@
+     end,
+     Tag = {'ON_LOAD_DOWN', Mod},
+     {Loader, _} = spawn_opt(Fun, [{monitor, [{tag, Tag}]}]),
+-    OnLoad = maps:put(Mod, {File, Pid, Loader}, OnLoad0),
++    OnLoad = maps:put(Mod, {File, Pid, Loader, OnDemand}, OnLoad0),
+     {keep, St0#state{on_load=OnLoad}}.
+ 
+ on_load_down(Mod, OnLoadRes, #state{on_load=OnLoad0}=St0) ->
+-    {{File, Pid, _Loader}, OnLoad} = maps:take(Mod, OnLoad0),
++    {{File, Pid, _Loader, OnDemand}, OnLoad} = maps:take(Mod, OnLoad0),
+     St = St0#state{on_load=OnLoad},
+-    run_loader({finish_on_load, File, OnLoadRes}, Pid, Mod, St).
++    run_loader({finish_on_load, File, OnLoadRes, OnDemand}, Pid, Mod, St).
+ 
+ finish_on_load_report(_Mod, Atom) when is_atom(Atom) ->
+     %% No error reports for atoms.
