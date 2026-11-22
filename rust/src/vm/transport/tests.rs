@@ -7,6 +7,7 @@ async fn cancellation_discards_a_selected_frame_before_its_first_byte() {
     peer.write_all(&[9; 64]).await.unwrap();
     let (client, inbox) = Client::new(16, None);
     let (ready, _boot) = oneshot::channel();
+    let (_exit, exited) = oneshot::channel();
     let session = run(
         peer,
         inbox,
@@ -18,6 +19,7 @@ async fn cancellation_discards_a_selected_frame_before_its_first_byte() {
         },
         Duration::from_secs(5),
         Output::default(),
+        exited,
     );
     pin_mut!(session);
     let request = client.request(
@@ -44,6 +46,7 @@ async fn a_boot_reply_without_the_embedded_api_does_not_open_a_session() {
     let (mut guest, peer) = tokio::io::duplex(128);
     let (_client, inbox) = Client::new(16, None);
     let (ready, boot) = oneshot::channel();
+    let (_exit, exited) = oneshot::channel();
     guest
         .write_all(&protocol::message_frame(vec![
             (Value::atom("type"), Value::atom("kettlecorn")),
@@ -62,6 +65,7 @@ async fn a_boot_reply_without_the_embedded_api_does_not_open_a_session() {
         },
         Duration::from_secs(5),
         Output::default(),
+        exited,
     )
     .now_or_never()
     .expect("the old boot reply must fail immediately");
@@ -83,6 +87,7 @@ async fn writer_runs_before_reader_drains_a_backlog() {
 
     let (_client, inbox) = Client::new(16, None);
     let (ready, _boot) = oneshot::channel();
+    let (_exit, exited) = oneshot::channel();
     let served = Arc::new(AtomicUsize::new(0));
     let calls = served.clone();
     let callback: HostFunction = Arc::new(move |_| {
@@ -100,6 +105,7 @@ async fn writer_runs_before_reader_drains_a_backlog() {
         },
         Duration::from_secs(5),
         Output::default(),
+        exited,
     );
     pin_mut!(session);
     assert!(session.as_mut().now_or_never().is_none());
@@ -151,6 +157,7 @@ async fn host_replies_stay_bounded_while_the_guest_stops_reading() {
         let (client, inbox) = Client::new(16, None);
         let client = Arc::new(client);
         let (ready, _boot) = oneshot::channel();
+        let (_exit, exited) = oneshot::channel();
         let callback: HostFunction =
             Arc::new(|_| Box::pin(async { Ok(Value::Binary(vec![0; 4096])) }));
         let (stderr, mut diagnostics) = mpsc::channel(1);
@@ -168,6 +175,7 @@ async fn host_replies_stay_bounded_while_the_guest_stops_reading() {
                 stderr: Some(stderr),
                 ..Output::default()
             },
+            exited,
         ));
 
         let pending = tokio::spawn({
@@ -269,6 +277,7 @@ async fn a_full_writer_keeps_reply_dispatch_and_deadlines_running() {
     let (client, inbox) = Client::new(16, None);
     let client = Arc::new(client);
     let (ready, _boot) = oneshot::channel();
+    let (_exit, exited) = oneshot::channel();
     let session = tokio::spawn(run(
         peer,
         inbox,
@@ -280,6 +289,7 @@ async fn a_full_writer_keeps_reply_dispatch_and_deadlines_running() {
         },
         Duration::from_millis(500),
         Output::default(),
+        exited,
     ));
     let initial = tokio::spawn({
         let client = client.clone();
@@ -353,4 +363,103 @@ async fn a_full_writer_keeps_reply_dispatch_and_deadlines_running() {
     assert!(error.to_string().contains("partial guest frame"));
     assert!(blocked.await.unwrap().is_err());
     assert!(queued.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn guest_exit_aborts_pending_callbacks() {
+    struct Dropped(Arc<AtomicUsize>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let (mut guest, peer) = tokio::io::duplex(1024);
+    let (_client, inbox) = Client::new(16, None);
+    let (ready, _boot) = oneshot::channel();
+    let (exit, exited) = oneshot::channel();
+    let started = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let callback: HostFunction = {
+        let (started, dropped) = (started.clone(), dropped.clone());
+        Arc::new(move |_| {
+            started.fetch_add(1, Ordering::Relaxed);
+            let guard = Dropped(dropped.clone());
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        })
+    };
+    let session = tokio::spawn(run(
+        peer,
+        inbox,
+        ready,
+        Callbacks {
+            functions: HashMap::from([("wait".into(), callback)]),
+            deadline: Duration::from_secs(60),
+            capacity: 4,
+        },
+        Duration::from_secs(5),
+        Output::default(),
+        exited,
+    ));
+    guest
+        .write_all(&protocol::host_call_frame("wait", 0))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), async {
+        while started.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the callback did not start");
+    // The session keeps draining until the guest's output ends.
+    exit.send(()).unwrap();
+    timeout(Duration::from_secs(1), async {
+        while dropped.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the callback was not aborted");
+    assert!(!session.is_finished());
+    drop(guest);
+    session.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn after_the_guest_exits_a_buffered_fatal_frame_ends_the_session_with_its_reason() {
+    let (mut guest, peer) = tokio::io::duplex(1024);
+    let reason = b"kettlecorn-fatal-test";
+    guest
+        .write_all(&(1 + reason.len() as u32).to_be_bytes())
+        .await
+        .unwrap();
+    guest.write_all(&[4]).await.unwrap();
+    guest.write_all(reason).await.unwrap();
+    drop(guest);
+    let (_client, inbox) = Client::new(16, None);
+    let (ready, _boot) = oneshot::channel();
+    let (exit, exited) = oneshot::channel();
+    exit.send(()).unwrap();
+    let error = run(
+        peer,
+        inbox,
+        ready,
+        Callbacks {
+            functions: HashMap::new(),
+            deadline: Duration::from_secs(1),
+            capacity: 4,
+        },
+        Duration::from_secs(5),
+        Output::default(),
+        exited,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("kettlecorn-fatal-test"),
+        "{error:#}"
+    );
 }

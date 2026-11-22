@@ -27,6 +27,7 @@ type HostFunction = Arc<dyn Fn(Value) -> HostFuture + Send + Sync>;
 const REPLY_MARGIN_MS: u32 = 1000;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_BYTES: usize = 64 * 1024;
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Guest configuration, limits, and host callbacks for [`Runtime::start`].
 /// Create with [`VmOptions::default`] and set the public fields before starting a VM.
@@ -334,18 +335,36 @@ impl Runtime {
             capacity: options.max_host_calls.get(),
         };
         let task = tokio::spawn(async move {
-            let result = tokio::select! {
-                biased;
-                _ = stop.cancelled() => Ok(()),
-                outcome = prepared.run(guest, streams, stop.clone()) => match outcome {
-                    ExecutionOutcome::Failed { error } => Err(error.context("guest execution failed")),
-                    other => Err(anyhow!("guest stopped: {other:?}")),
-                },
-                result = transport::run(peer, inbox, accepting, callbacks, options.frame_write_timeout, transport::Output {
-                    stdout,
-                    stderr: stderr.clone(),
-                }) => result,
-                _ = relay_stderr(raw_stderr, stderr.clone()) => unreachable!(),
+            // The transport and its pending callbacks end before root cleanup.
+            let result = {
+                let mut relay = tokio::spawn(relay_stderr(raw_stderr, stderr.clone()));
+                let (exit, exited) = oneshot::channel();
+                let transport = transport::run(
+                    peer,
+                    inbox,
+                    accepting,
+                    callbacks,
+                    options.frame_write_timeout,
+                    transport::Output { stdout, stderr },
+                    exited,
+                );
+                tokio::pin!(transport);
+                let result = tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => Ok(()),
+                    outcome = prepared.run(guest, streams, stop.clone()) => {
+                        // The guest's last frames and stderr can still be buffered.
+                        let _ = exit.send(());
+                        // A frame the transport has read is kept even if stderr is still draining.
+                        let deadline = Instant::now() + DRAIN_TIMEOUT;
+                        let drained = tokio::time::timeout_at(deadline, &mut transport).await;
+                        let _ = tokio::time::timeout_at(deadline, &mut relay).await;
+                        Err(exit_error(outcome, drained.unwrap_or(Ok(()))))
+                    }
+                    result = &mut transport => result,
+                };
+                relay.abort();
+                result
             };
             let cleanup = tokio::task::spawn_blocking(move || root.close()).await;
             result.and_then(|()| Ok(cleanup??))
@@ -496,6 +515,16 @@ impl Drop for Vm {
     }
 }
 
+/// A terminal frame read while draining, such as a fatal error, explains the
+/// exit better than the execution outcome, as it does when read before exit.
+fn exit_error(outcome: ExecutionOutcome, drained: Result<()>) -> anyhow::Error {
+    match (drained, outcome) {
+        (Err(error), _) => error,
+        (Ok(()), ExecutionOutcome::Failed { error }) => error.context("guest execution failed"),
+        (Ok(()), other) => anyhow!("guest stopped: {other:?}"),
+    }
+}
+
 async fn relay_stderr(stream: Option<DuplexStream>, sender: Option<mpsc::Sender<Vec<u8>>>) {
     if let (Some(mut stream), Some(sender)) = (stream, sender) {
         let mut buffer = [0; 8192];
@@ -503,7 +532,6 @@ async fn relay_stderr(stream: Option<DuplexStream>, sender: Option<mpsc::Sender<
             let _ = sender.try_send(buffer[..size].to_vec());
         }
     }
-    std::future::pending().await
 }
 
 fn timeout_ms(timeout: Duration) -> Result<u32, Error> {

@@ -398,3 +398,19 @@ async fn stats_report_fuel_consumed_and_linear_memory() {
     shutdown.result.unwrap();
     assert!(shutdown.stats.fuel_consumed.unwrap() >= evaluated);
 }
+
+#[tokio::test]
+async fn a_fatal_halt_reports_its_reason() {
+    let Some(directory) = std::env::var_os("KETTLECORN_TEST_RUNTIME") else {
+        return;
+    };
+    let runtime = Runtime::load(directory).unwrap();
+    let vm = runtime.start(VmOptions::default()).await.unwrap();
+    let source = r#":erlang.halt(~c"kettlecorn-fatal-test")"#;
+    assert!(vm.eval(source, EvalOptions::default()).await.is_err());
+    let error = vm.shutdown().await.result.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("kettlecorn-fatal-test"),
+        "{error:#}"
+    );
+}

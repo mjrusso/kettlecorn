@@ -201,6 +201,7 @@ pub(super) async fn run(
     callbacks: Callbacks,
     write_timeout: Duration,
     output: Output,
+    mut exited: oneshot::Receiver<()>,
 ) -> Result<()> {
     let (reader, mut writer) = tokio::io::split(peer);
     // The stream must keep a partial frame when another select branch wins.
@@ -221,6 +222,8 @@ pub(super) async fn run(
     let mut reported_oversize = false;
     let mut reported_overload = false;
     let mut served = 0;
+    // After the guest exits, only its buffered output remains to read.
+    let mut exiting = false;
 
     loop {
         if served == MAX_SERVE_BATCH {
@@ -229,7 +232,11 @@ pub(super) async fn run(
         }
         served += 1;
 
-        if current.is_none() {
+        if guest_exited(&mut exiting, &mut exited) {
+            current = None;
+            // Their replies could not reach the guest.
+            calls.abort_all();
+        } else if current.is_none() {
             current = next_write(&mut normal, &mut priority, write_timeout)?;
         }
         let write_deadline = current.as_ref().map(|frame| frame.deadline);
@@ -268,20 +275,27 @@ pub(super) async fn run(
                     }
                     None
                 }
-                request = inbox.requests.recv() => {
+                _ = &mut exited, if !exiting => {
+                    exiting = true;
+                    None
+                }
+                request = inbox.requests.recv(), if !exiting => {
                     let Some(request) = request else { return Ok(()); };
                     if !request.pending.reply.is_closed() {
                         normal.push_back(request);
                     }
                     None
                 }
-                Some(completed) = calls.join_next() => {
+                Some(completed) = calls.join_next(), if !exiting => {
                     let (token, result, slot) = completed.context("join host callback")?;
                     send_host_reply(&mut priority, &token, result, slot)?;
                     None
                 }
                 Some(frame) = frames.next() => {
-                    let frame = frame.context("read guest frame")?;
+                    let frame = match frame {
+                        Err(_) if guest_exited(&mut exiting, &mut exited) => return Ok(()),
+                        frame => frame.context("read guest frame")?,
+                    };
                     let Some(frame) = frame else {
                         if !reported_oversize {
                             output.diagnostic(format_args!("discarded oversized guest frame"));
@@ -290,6 +304,9 @@ pub(super) async fn run(
                         continue;
                     };
                     match protocol::event(&frame)? {
+                        // These need a running guest.
+                        Some(Event::Ready(_) | Event::HostCall { .. } | Event::RejectedHostCall(_))
+                            if guest_exited(&mut exiting, &mut exited) => {}
                         Some(Event::Ready(version)) => {
                             anyhow::ensure!(
                                 version == Some(protocol::EMBEDDED_API),
@@ -364,6 +381,9 @@ pub(super) async fn run(
 
         if let Some(written) = written {
             let frame = current.as_mut().unwrap();
+            if written.is_err() && guest_exited(&mut exiting, &mut exited) {
+                continue;
+            }
             let count = written?;
             if count == 0 {
                 current = None;
@@ -459,6 +479,12 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Option<Vec<
     let drained = io::copy(&mut reader.take(len as u64), &mut io::sink()).await?;
     anyhow::ensure!(drained == len as u64, "truncated oversized guest frame");
     Ok(None)
+}
+
+// Records an exit signalled while another branch was ready.
+fn guest_exited(exiting: &mut bool, exited: &mut oneshot::Receiver<()>) -> bool {
+    *exiting = *exiting || exited.try_recv().is_ok();
+    *exiting
 }
 
 fn finish(pending: &mut HashMap<u32, Pending>, id: u32, result: Result<Value, Error>) {
