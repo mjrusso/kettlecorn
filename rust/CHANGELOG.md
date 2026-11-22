@@ -8,6 +8,8 @@
   `vm.shutdown().await.result?`.
 * Add `Vm::stats`, which reports fuel consumed (when `max_fuel` is set) and
   linear memory.
+* Launcher processes share cached compiled code. The first start after
+  upgrading recompiles the runtime.
 
 ## 0.2.0
 

@@ -245,12 +245,16 @@ be owned by the current user and have no group or other permissions. Entries
 must also be private regular files. Symlinks and directories inside the guest
 root are refused. The guest receives no access to the cache.
 
-Native artifacts are executable host code. Treat this cache like installed
-binaries; another process running as your user can replace them. A stored digest
-detects accidental corruption, and the key includes both the component digest
-and engine compatibility hash. Writes use temporary files and atomic rename.
-Cache failures fall back to compilation. Old entries are evicted to keep the
-cache at 256 MiB; active loaded components remain valid after eviction.
+Native artifacts are executable host code. Any process running as your
+user can replace them. Launchers map verified artifacts so VMs using the
+same component share its compiled code. Editing or truncating a mapped
+file can crash VMs using it. The first use of a component from the old
+cache format recompiles it.
+
+After publishing a new artifact, the launcher tries to bring the cache
+back to 256 MiB by evicting old entries. Active mappings remain valid
+after eviction. If the cache is unavailable or the component is too
+large to cache, the VM can still compile and run it.
 
 In Elixir, use `compile_cache: false` to disable caching or `cache_dir: path`
 to choose a private directory. `bin/kettlecorn-launch` accepts `--no-cache`
