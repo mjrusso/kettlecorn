@@ -98,7 +98,11 @@ async fn main() -> Result<()> {
     let mut plugins = Vec::new();
     let mut result = monitor(&runtime, &telemetry, paths, &mut plugins, stdout).await;
     for Plugin { name, vm } in plugins {
-        let shutdown = vm.shutdown().await.with_context(|| format!("stop {name}"));
+        let shutdown = vm
+            .shutdown()
+            .await
+            .result
+            .with_context(|| format!("stop {name}"));
         result = result.and(shutdown);
     }
     let forwarded = forward_output.await.context("join plugin output task")?;

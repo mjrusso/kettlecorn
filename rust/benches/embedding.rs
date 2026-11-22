@@ -104,13 +104,13 @@ async fn startup(runtime: &Runtime, warm_up: bool) -> Result<()> {
     if warm_up {
         println!("  total               {:8.1} ms", millis(started - total));
     }
-    vm.shutdown().await?;
+    vm.shutdown().await.result?;
 
     if !warm_up {
         let before = Instant::now();
         let vm = runtime.start(VmOptions::default()).await?;
         println!("  start, same Runtime {:8.1} ms", millis(before.elapsed()));
-        vm.shutdown().await?;
+        vm.shutdown().await.result?;
     }
     Ok(())
 }
@@ -159,7 +159,7 @@ async fn dispatch(runtime: &Runtime) -> Result<()> {
         let micros = before.elapsed().as_secs_f64() * 1_000_000.0 / f64::from(HOST_CALLS);
         println!("  round {round} / {HOST_CALLS} calls   mean {micros:7.1} µs");
     }
-    vm.shutdown().await?;
+    vm.shutdown().await.result?;
     Ok(())
 }
 

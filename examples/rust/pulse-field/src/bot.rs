@@ -89,7 +89,7 @@ impl Bot {
     }
 
     pub async fn shutdown(self) -> Result<()> {
-        Ok(self.0.shutdown().await?)
+        Ok(self.0.shutdown().await.result?)
     }
 }
 

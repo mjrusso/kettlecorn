@@ -34,7 +34,7 @@ async fn oversized_eval_results_keep_inspected_output_and_leave_the_vm_running()
         let next = vm.eval("2 + 2", EvalOptions::default()).await.unwrap();
         assert_eq!(next.result.unwrap().value, Some(Value::Integer(4.into())));
     }
-    vm.shutdown().await.unwrap();
+    vm.shutdown().await.result.unwrap();
 }
 
 #[tokio::test]
@@ -127,7 +127,7 @@ async fn evaluates_scripts_and_dispatches_host_calls_in_one_vm() {
     }
     let next = vm.eval("2 + 2", EvalOptions::default()).await.unwrap();
     assert_eq!(next.result.unwrap().value, Some(Value::Integer(4.into())));
-    vm.shutdown().await.unwrap();
+    vm.shutdown().await.result.unwrap();
 }
 
 #[tokio::test]
@@ -176,7 +176,7 @@ async fn a_waiting_host_callback_leaves_other_requests_available() {
             Some(Value::Tuple(vec![Value::atom("ok"), Value::from(7)]))
         );
     }
-    vm.shutdown().await.unwrap();
+    vm.shutdown().await.result.unwrap();
 }
 
 #[tokio::test]
@@ -301,7 +301,7 @@ async fn named_operations_deliver_events_and_report_oversized_host_calls() {
         events.recv().await,
         Err(broadcast::error::RecvError::Lagged(36))
     ));
-    vm.shutdown().await.unwrap();
+    vm.shutdown().await.result.unwrap();
 }
 
 #[tokio::test]
@@ -367,7 +367,7 @@ async fn oversized_guest_frames_leave_the_vm_running() {
         vm.call(name, Value::atom("small")).await.unwrap(),
         Value::atom("ok")
     );
-    vm.shutdown().await.unwrap();
+    vm.shutdown().await.result.unwrap();
 }
 
 #[tokio::test]
@@ -380,7 +380,7 @@ async fn stats_report_fuel_consumed_and_linear_memory() {
     let stats = unmetered.stats();
     assert_eq!(stats.fuel_consumed, None);
     assert!(stats.memory > 0);
-    unmetered.shutdown().await.unwrap();
+    unmetered.shutdown().await.result.unwrap();
 
     let mut options = VmOptions::default();
     options.max_fuel = Some(u64::MAX);
@@ -392,6 +392,9 @@ async fn stats_report_fuel_consumed_and_linear_memory() {
         .await
         .unwrap();
     assert!(evaluation.result.is_ok());
-    assert!(vm.stats().fuel_consumed.unwrap() > booted);
-    vm.shutdown().await.unwrap();
+    let evaluated = vm.stats().fuel_consumed.unwrap();
+    assert!(evaluated > booted);
+    let shutdown = vm.shutdown().await;
+    shutdown.result.unwrap();
+    assert!(shutdown.stats.fuel_consumed.unwrap() >= evaluated);
 }

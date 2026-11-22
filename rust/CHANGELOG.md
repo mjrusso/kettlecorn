@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* **Breaking:** `Vm::shutdown` returns a `Shutdown` with the final resource
+  stats and a `result`. Replace `vm.shutdown().await?` with
+  `vm.shutdown().await.result?`.
 * Add `Vm::stats`, which reports fuel consumed (when `max_fuel` is set) and
   linear memory.
 

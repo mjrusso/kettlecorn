@@ -16,5 +16,5 @@ async fn main() -> Result<()> {
     let evaluation = evaluation?;
     print!("{}", evaluation.output);
     evaluation.result?;
-    Ok(shutdown?)
+    Ok(shutdown.result?)
 }

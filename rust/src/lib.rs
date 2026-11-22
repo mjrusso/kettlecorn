@@ -28,4 +28,6 @@ pub use engine::Runtime;
 pub use error::Error;
 pub use num_bigint::BigInt;
 pub use protocol::Value;
-pub use vm::{EvalOptions, EvalValue, Evaluation, Language, ScriptError, Stats, Vm, VmOptions};
+pub use vm::{
+    EvalOptions, EvalValue, Evaluation, Language, ScriptError, Shutdown, Stats, Vm, VmOptions,
+};

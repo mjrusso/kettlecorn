@@ -108,7 +108,7 @@ options.max_fuel = Some(50_000_000_000);
 options.max_lifetime = Some(std::time::Duration::from_secs(30));
 let vm = runtime.start(options).await?;
 let evaluation = vm.eval("Enum.sum(1..10)", EvalOptions::default()).await;
-vm.shutdown().await?;
+vm.shutdown().await.result?;
 println!("{}", evaluation?.result?.inspected);
 ```
 

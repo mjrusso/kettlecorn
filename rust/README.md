@@ -44,7 +44,7 @@ fn main() -> anyhow::Result<()> {
                     EvalOptions::default(),
                 )
                 .await;
-            vm.shutdown().await?;
+            vm.shutdown().await.result?;
 
             let evaluation = evaluation?;
             print!("{}", evaluation.output);
@@ -95,9 +95,19 @@ runtime's Elixir version and OTP major release. See
 [cooking Mix applications](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#cooking-mix-applications)
 for the build step.
 
-`Vm::shutdown` cancels execution and waits for the VM's private filesystem
-to be removed. Dropping the VM requests cancellation; use `shutdown` when
-you need to wait for cleanup.
+`Vm::shutdown` cancels execution, waits for the VM's private filesystem
+to be removed, and returns a `Shutdown` with the VM's final `stats` and a
+`result`. The result is an error if the guest had already stopped, for
+example by running out of fuel. Dropping the VM requests cancellation; use
+`shutdown` when you need to wait for cleanup.
+
+```rust
+let shutdown = vm.shutdown().await;
+println!("Final linear memory: {} bytes", shutdown.stats.memory);
+shutdown.result?;
+```
+
+Call `vm.stats()` to read counters while the VM is running.
 
 ## Runtime setup and deployment
 

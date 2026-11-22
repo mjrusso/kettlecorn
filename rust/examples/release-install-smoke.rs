@@ -71,7 +71,7 @@ fn boot(runtime: Runtime) -> Result<()> {
             let vm = runtime.start(options).await?;
             let evaluation = vm.eval("2 + 2", EvalOptions::default()).await?;
             assert_eq!(evaluation.result?.value, Some(Value::from(4_i64)));
-            vm.shutdown().await?;
+            vm.shutdown().await.result?;
             Ok(())
         })
 }

@@ -185,7 +185,19 @@ impl fmt::Display for ScriptError {
 
 impl std::error::Error for ScriptError {}
 
-/// Resources a VM has used, from [`Vm::stats`].
+/// What [`Vm::shutdown`] returns.
+#[derive(Debug)]
+#[must_use = "`result` reports execution and cleanup failures"]
+#[non_exhaustive]
+pub struct Shutdown {
+    /// The VM's final stats, also when `result` is an error.
+    pub stats: Stats,
+    /// An error if the guest had already stopped, for example by running out
+    /// of fuel, or if cleaning up its private root failed.
+    pub result: Result<(), Error>,
+}
+
+/// Resources a VM has used, from [`Vm::stats`] or, final, from [`Vm::shutdown`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Stats {
@@ -461,11 +473,16 @@ impl Vm {
         }
     }
 
-    /// Cancels the guest and waits for execution and private-root cleanup.
-    pub async fn shutdown(mut self) -> Result<(), Error> {
+    /// Cancels the guest, waits for execution and private-root cleanup, and
+    /// returns the VM's final stats with the result.
+    pub async fn shutdown(mut self) -> Shutdown {
         self.client.close();
         self.cancel.cancel();
-        self.join().await.map_err(Error::Execution)
+        let result = self.join().await.map_err(Error::Execution);
+        Shutdown {
+            stats: self.stats(),
+            result,
+        }
     }
 
     async fn join(&mut self) -> Result<()> {
