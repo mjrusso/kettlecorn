@@ -31,6 +31,9 @@
   calls manually receive `{:kettlecorn, vm, {:host_call_cancel, reply_to}}`.
 * Launcher processes share cached compiled code, reducing memory per VM.
   The first start after upgrading recompiles the runtime.
+* `mix kettlecorn.install --archive PATH` (`Kettlecorn.Install.runtime/1`'s
+  `:archive`) installs a release archive already on disk, verified against
+  the same checksum as a download, for hosts without network access.
 * Remove VM private directories faster on shutdown and log cleanup failures.
 
 ## 0.2.0

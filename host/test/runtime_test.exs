@@ -67,34 +67,40 @@ defmodule Kettlecorn.RuntimeTest do
     assert :ok = :erl_tar.create(~c"#{archive}", [{~c"runtime", ~c"#{runtime}"}], [:compressed])
 
     destination = Path.join(dir, "installed")
-    bytes = File.read!(archive)
-    checksum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+    checksum = :sha256 |> :crypto.hash(File.read!(archive)) |> Base.encode16(case: :lower)
+    install = &Kettlecorn.Install.runtime([dir: destination, archive: &1], fn _ -> {:ok, &2} end)
 
-    assert {:error, message} =
-             Kettlecorn.Install.runtime([dir: destination], fn _ ->
-               {:ok, bytes, "bad checksum"}
-             end)
+    assert {:error, "reading " <> _} = install.(Path.join(dir, "missing.tar.gz"), checksum)
 
+    assert {:error, message} = install.(archive, "bad checksum")
     assert message =~ "SHA-256 #{checksum}, expected bad checksum"
     assert {:error, :enoent} = File.lstat(destination <> ".versions")
 
-    assert {:error, message} =
-             Kettlecorn.Install.runtime([dir: destination], fn _ -> {:ok, bytes, checksum} end)
+    assert {:error, message} = install.(archive, checksum)
 
     assert message =~ "expected Kettlecorn runtime version"
     assert {:error, :enoent} = File.lstat(destination)
     assert File.ls!(destination <> ".versions") == []
   end
 
+  test "mix kettlecorn.install rejects a path given without --archive" do
+    assert_raise Mix.Error, ~r/--archive PATH/, fn ->
+      Mix.Tasks.Kettlecorn.Install.run(["runtime.tar.gz"])
+    end
+  end
+
   test "install reports when the generation directory cannot be created", %{tmp_dir: dir} do
     destination = Path.join(dir, "runtime")
     generations = destination <> ".versions"
     File.write!(generations, "occupied")
-    archive = "fixture"
-    checksum = :sha256 |> :crypto.hash(archive) |> Base.encode16(case: :lower)
+    archive = Path.join(dir, "runtime.tar.gz")
+    File.write!(archive, "fixture")
+    checksum = :sha256 |> :crypto.hash("fixture") |> Base.encode16(case: :lower)
 
     assert {:error, "cannot create generation directory " <> detail} =
-             Kettlecorn.Install.runtime([dir: destination], fn _ -> {:ok, archive, checksum} end)
+             Kettlecorn.Install.runtime([dir: destination, archive: archive], fn _ ->
+               {:ok, checksum}
+             end)
 
     assert detail =~ generations
     assert File.read!(generations) == "occupied"

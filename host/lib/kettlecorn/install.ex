@@ -2,10 +2,11 @@ defmodule Kettlecorn.Install do
   @moduledoc """
   Installs the native runtime for this platform from a GitHub release.
 
-  `runtime/1` downloads `kettlecorn-runtime-<version>-<system>.tar.gz` and
-  verifies its SHA-256 against the package's `priv/checksums.txt`. Configure
-  `:release_base_url` for a mirror with the same release layout. The archive
-  includes the launcher; no separate Wasmtime installation is needed.
+  `runtime/1` downloads `kettlecorn-runtime-<version>-<system>.tar.gz`, or
+  reads it from `:archive`, and verifies its SHA-256 against the package's
+  `priv/checksums.txt`. Configure `:release_base_url` for a mirror with the
+  same release layout. The archive includes the launcher; no separate
+  Wasmtime installation is needed.
   """
 
   require Logger
@@ -26,11 +27,13 @@ defmodule Kettlecorn.Install do
   end
 
   @doc """
-  Downloads the release runtime for this version into `:dir` (default:
-  `Kettlecorn.Runtime.installed_dir/0`). Reuses a compatible installation
-  unless `force: true`. Concurrent first installs reuse the winning generation.
-  Forced reinstalls atomically replace the destination and keep previous
-  generations in `<dir>.versions` for existing readers.
+  Installs the runtime for this package version. Set `:dir` to change the
+  destination from `Kettlecorn.Runtime.installed_dir/0`. Set `:archive` to
+  install from a local archive for this version and platform.
+
+  Reuses a compatible installation unless `force: true`. Forced reinstalls
+  atomically replace the destination and keep previous generations in
+  `<dir>.versions` for existing readers.
   Move an invalid cache symlink aside to repair it with an ordinary install.
   Use `force: true` only at a destination you own. It authorizes overwriting
   any non-directory entry at that path, including a regular file. Move an
@@ -38,21 +41,25 @@ defmodule Kettlecorn.Install do
   Returns `{:ok, dir}` or `{:error, message}`.
   """
   @spec runtime(keyword()) :: {:ok, Path.t()} | {:error, String.t()}
-  def runtime(opts \\ []), do: install_runtime(opts, &fetch_release/1)
+  def runtime(opts \\ []), do: install_runtime(opts, &expected_checksum/1)
 
   if Mix.env() == :test do
     @doc false
-    def runtime(opts, fetch), do: install_runtime(opts, fetch)
+    def runtime(opts, checksum), do: install_runtime(opts, checksum)
   end
 
-  defp install_runtime(opts, fetch) do
+  defp install_runtime(opts, checksum) do
     dir = opts[:dir] || Runtime.installed_dir()
-    if opts[:force] == true, do: install(dir, true, fetch), else: install_if_missing(dir, fetch)
+    source = if path = opts[:archive], do: {:file, path}, else: :release
+
+    if opts[:force] == true,
+      do: install(dir, true, source, checksum),
+      else: install_if_missing(dir, source, checksum)
   end
 
-  defp install_if_missing(dir, fetch) do
+  defp install_if_missing(dir, source, checksum) do
     case Runtime.lookup_cache(dir) do
-      :missing -> install(dir, false, fetch)
+      :missing -> install(dir, false, source, checksum)
       result -> with :ok <- reuse(result, dir), do: {:ok, dir}
     end
   end
@@ -64,9 +71,10 @@ defmodule Kettlecorn.Install do
 
   defp reuse(:missing, dir), do: {:error, "#{dir} disappeared during installation"}
 
-  defp install(dir, force, fetch) do
+  defp install(dir, force, source, checksum) do
     with {:ok, name} <- archive_name(),
-         {:ok, archive, expected} <- fetch.(name),
+         {:ok, expected} <- checksum.(name),
+         {:ok, archive} <- read(source, name),
          :ok <- verify(archive, name, expected),
          :ok <- unpack_runtime(archive, dir, force) do
       {:ok, dir}
@@ -111,10 +119,12 @@ defmodule Kettlecorn.Install do
     end
   end
 
-  defp fetch_release(name) do
-    with {:ok, expected} <- expected_checksum(name),
-         {:ok, archive} <- download(url(name)) do
-      {:ok, archive, expected}
+  defp read(:release, name), do: download(url(name))
+
+  defp read({:file, path}, _name) do
+    case File.read(path) do
+      {:ok, archive} -> {:ok, archive}
+      {:error, reason} -> {:error, "reading #{path}: #{:file.format_error(reason)}"}
     end
   end
 
