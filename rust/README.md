@@ -166,6 +166,33 @@ Reuse a loaded `Runtime` across VMs to share prepared components. Call
 VM. Preparation is reused when the HTTP setting and the presence of a fuel
 limit match.
 
+### Preload and evaluation budgets
+
+```rust
+use kettlecorn::{EvalOptions, Preload, VmOptions};
+use std::num::NonZeroU64;
+use tokio::sync::mpsc;
+
+let (late_loads, mut reports) = mpsc::channel(16);
+let mut options = VmOptions::default();
+options.preload = Preload::Strict;
+options.late_loads = Some(late_loads);
+
+let vm = runtime.start(options).await?;
+let evaluation = vm.eval("Enum.sum(1..10)", EvalOptions {
+    max_reductions: NonZeroU64::new(20_000),
+    ..Default::default()
+}).await?;
+```
+
+Read module names from `reports`. Strict mode stops the VM on an on-demand load
+after preloading, including while applications start. When `late_loads` is unset, diagnostics go to a configured
+`VmOptions::stderr` channel. Full channels drop reports.
+
+`max_reductions` limits one evaluation and its descendants. Read the
+charged count from `evaluation.reductions`. If a scheduler charge exceeds
+the limit, `evaluation.result` holds an error with kind `reductions`.
+
 ## Examples and API reference
 
 | Example | Demonstrates |

@@ -1,4 +1,5 @@
 use kettlecorn::{EvalOptions, Language, Preload, Runtime, Value, VmOptions};
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -113,6 +114,26 @@ async fn evaluates_scripts_and_dispatches_host_calls_in_one_vm() {
     };
     let result = vm.eval("Process.sleep(:infinity)", slow).await.unwrap();
     assert_eq!(result.result.unwrap_err().kind, "timeout");
+
+    let limited = EvalOptions {
+        timeout: Duration::from_secs(60),
+        max_reductions: NonZeroU64::new(1_000_000),
+        ..Default::default()
+    };
+    let result = vm
+        .eval("Stream.repeatedly(fn -> :x end) |> Stream.run()", limited)
+        .await
+        .unwrap();
+    assert!(result.reductions > 1_000_000, "{}", result.reductions);
+    assert_eq!(result.result.unwrap_err().kind, "reductions");
+    let oversized = EvalOptions {
+        max_reductions: NonZeroU64::new(1 << 63),
+        ..Default::default()
+    };
+    assert!(matches!(
+        vm.eval("1", oversized).await,
+        Err(kettlecorn::Error::InvalidRequest(_))
+    ));
 
     {
         let eval = vm.eval(

@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::future::Future;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -134,7 +134,7 @@ pub enum Language {
     Erlang,
 }
 
-/// Source language, guest timeout, and bindings for one evaluation.
+/// Source language, guest limits, and bindings for one evaluation.
 pub struct EvalOptions {
     /// Defaults to [`Language::Elixir`].
     pub language: Language,
@@ -144,6 +144,11 @@ pub struct EvalOptions {
     pub timeout: Duration,
     /// Initial variables, keyed by name. Defaults to an empty map.
     pub binding: BTreeMap<String, Value>,
+    /// Reductions the evaluation and the processes it spawns may use before the guest stops
+    /// them with a `reductions` [`ScriptError`]. [`Vm::eval`] rejects limits above `i64::MAX` with
+    /// [`Error::InvalidRequest`]. `None`, the default, sets no limit.
+    /// [`Evaluation::reductions`] describes how they are counted.
+    pub max_reductions: Option<NonZeroU64>,
 }
 
 impl Default for EvalOptions {
@@ -152,6 +157,7 @@ impl Default for EvalOptions {
             language: Language::Elixir,
             timeout: DEFAULT_TIMEOUT,
             binding: BTreeMap::new(),
+            max_reductions: None,
         }
     }
 }
@@ -163,6 +169,11 @@ pub struct Evaluation {
     pub output: String,
     /// Whether captured stdout exceeded the guest's capture limit.
     pub output_truncated: bool,
+    /// Reductions charged to the evaluation, its descendants, and its output
+    /// callbacks before the budget closed. The count includes the charge that
+    /// exceeded the limit. A timeout can end accounting before the evaluation
+    /// process exits.
+    pub reductions: u64,
     /// The evaluated value or the script's error, with captured output retained in this object.
     pub result: Result<EvalValue, ScriptError>,
 }
@@ -181,7 +192,7 @@ pub struct EvalValue {
 /// A guest evaluation error, distinct from transport and VM failures.
 #[derive(Debug)]
 pub struct ScriptError {
-    /// Guest error category, such as `error`, `exit`, or `throw`.
+    /// Guest error category, such as `error`, `exit`, `throw`, `timeout`, or `reductions`.
     pub kind: String,
     /// Error text formatted by the guest evaluator.
     pub message: String,
@@ -420,11 +431,21 @@ impl Vm {
             .binding
             .into_iter()
             .map(|(name, value)| (Value::from(name), value));
+        let max_reductions = match options.max_reductions {
+            Some(limit) if i64::try_from(limit.get()).is_err() => {
+                return Err(Error::InvalidRequest(anyhow!(
+                    "max_reductions exceeds the guest limit"
+                )));
+            }
+            Some(limit) => Value::Integer(limit.get().into()),
+            None => Value::atom("infinity"),
+        };
         let value = Value::Tuple(vec![
             Value::atom("eval"),
             Value::binary(code),
             Value::map([
                 (Value::binary("timeout_ms"), Value::Integer(timeout.into())),
+                (Value::binary("max_reductions"), max_reductions),
                 (
                     Value::binary("finish_timeout_ms"),
                     Value::Integer((REPLY_MARGIN_MS / 2).into()),
@@ -565,6 +586,11 @@ fn evaluation(value: Value) -> Result<Evaluation> {
         .as_ref()
         .and_then(Value::as_atom)
         == Some("true");
+    let reductions = match fields.remove(&Value::binary("reductions")) {
+        Some(Value::Integer(reductions)) => u64::try_from(&reductions).ok(),
+        _ => None,
+    }
+    .context("missing or invalid evaluation field reductions")?;
     let result = match status.as_atom() {
         Some("ok") => Ok(EvalValue {
             inspected: text(&mut fields, "inspected")?,
@@ -579,6 +605,7 @@ fn evaluation(value: Value) -> Result<Evaluation> {
     Ok(Evaluation {
         output,
         output_truncated,
+        reductions,
         result,
     })
 }

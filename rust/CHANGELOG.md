@@ -12,6 +12,10 @@
   while the VM boots and sends the names of modules loaded on demand
   afterwards to `VmOptions::late_loads`; `Preload::Strict` stops the VM on
   such a load.
+* **Breaking:** Update `EvalOptions` struct literals with
+  `max_reductions: None` or `..Default::default()`. `Evaluation::reductions`
+  reports the charged count. When an evaluation exceeds the limit,
+  `Evaluation::result` holds a `ScriptError` with kind `reductions`.
 * Launcher processes share cached compiled code. The first start after
   upgrading recompiles the runtime.
 
