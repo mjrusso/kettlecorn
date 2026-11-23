@@ -131,7 +131,8 @@ On Linux, the cache is under `$XDG_CACHE_HOME` or `~/.cache`. On macOS, it is
 under `~/Library/Caches`. Both use `kettlecorn/runtime-<version>` within that
 directory. Cached releases must match the crate version and host platform.
 
-The installer verifies the release archive's SHA-256 against the checksum
+The installer reuses a compatible cached runtime without reading the
+archive. On a fresh install it verifies the archive's SHA-256 against the checksum
 shipped with the crate before installing it atomically in the cache, for a
 download or an archive on disk. See
 [offline deployment](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#offline-deployment). It leaves

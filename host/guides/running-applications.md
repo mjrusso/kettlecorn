@@ -252,6 +252,15 @@ COPY --from=build /opt/kettlecorn /opt/kettlecorn
 ENV KETTLECORN_RUNTIME=/opt/kettlecorn
 ```
 
+If the build has no network access, copy the release archive into the
+build stage and install from it (see [offline deployment](#offline-deployment)):
+
+```dockerfile
+COPY kettlecorn-runtime-<version>-<system>.tar.gz /tmp/kettlecorn-runtime.tar.gz
+RUN mix kettlecorn.install --archive /tmp/kettlecorn-runtime.tar.gz --dir /tmp/kettlecorn \
+    && cp -RL /tmp/kettlecorn /opt/kettlecorn
+```
+
 Or install into your application's `priv/`, so that `mix release` includes it:
 
 ```console
@@ -270,6 +279,72 @@ The runtime can be read-only: each VM uses a private writable copy of the
 guest files. The launcher caches compiled components in a private per-user
 directory; see [compilation cache](sandbox.md#compilation-cache).
 Start and stop a VM as the deployment user to warm it before serving requests.
+
+## Offline deployment
+
+Runtime discovery and VM startup use files already on disk. Guest
+network access depends on its grants. Install the runtime and fetch your
+application's dependencies before deploying to an offline host.
+
+### Installing from an archive
+
+On a machine with network access, download
+`kettlecorn-runtime-<version>-<system>.tar.gz` for the target platform from
+the [GitHub release](https://github.com/mjrusso/kettlecorn/releases) for
+`v<version>`. Copy it to the target, then install from the file:
+
+```console
+$ mix kettlecorn.install --archive 'kettlecorn-runtime-<version>-<system>.tar.gz'
+```
+
+`<version>` is the Hex package's version and `<system>` the target, such as
+`x86_64-linux`. Add `--dir` to install elsewhere than the user cache.
+
+Both installers reuse a compatible cached runtime without reading the
+archive. When installing from a file, the Elixir installer checks its SHA-256 in the Hex package, as it
+does a download, so the archive must match the library's version and the
+host platform. In Rust, `Runtime::install_from_archive(path)` installs it
+into the user cache with the crate's checksum; or extract it anywhere and
+load it with `Runtime::load(path)`, which doesn't check the archive. To serve archives from your own
+network instead, configure `:release_base_url` with the release layout.
+
+For Docker, use the [Docker recipe](#deploying) with `--archive`.
+
+### Nix
+
+The flake builds the runtime as a package. Point `KETTLECORN_RUNTIME` at
+its output:
+
+```console
+$ nix build github:mjrusso/kettlecorn/v0.2.0#runtime --print-out-paths
+```
+
+`#kettlecorn-run` is the CLI, and `#release` builds the platform archive.
+Use the [binary cache](development.md#binary-cache); building the runtime
+from source compiles OTP. To deploy to a host without network access, copy
+the build's closure there with `nix copy --to ssh://host <store path>`.
+
+### Cooking without network access
+
+Cooking doesn't download anything, but building the app needs its Hex
+dependencies. Fetch them in a step with network access, or fill Hex's
+cache ahead of time and set `HEX_OFFLINE=1`.
+
+### The compilation cache
+
+The first VM start on a host compiles the runtime's WebAssembly components
+to native code, which makes it slower than later starts, and caches the
+result in the
+[compilation cache](sandbox.md#compilation-cache). A cache entry is valid
+only for the same runtime, Wasmtime version and CPU features. A cache
+built on a host with a different CPU is not used: the VM compiles again.
+
+To ship a warm cache in an image, warm it in the image build as the user
+that runs the application and with the same `XDG_CACHE_HOME`, and deploy
+the image only to hosts with the same CPU features, in practice the same
+CPU model. The cache directory must
+stay owned by that user with no group or other permissions. Otherwise,
+warm the cache when the container or host starts, before serving requests.
 
 ## Troubleshooting
 

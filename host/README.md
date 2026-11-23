@@ -148,6 +148,9 @@ The runtime is separate from the Hex package; include it in your deployment.
 The installer defaults to your user cache directory. `Kettlecorn.Runtime`
 documents discovery and configuration, including `KETTLECORN_RUNTIME`.
 
+[Offline deployment](guides/running-applications.md#offline-deployment)
+shows how to install from a local release archive.
+
 [Running applications](guides/running-applications.md) covers deployment in
 images and Mix releases. Its
 [troubleshooting section](guides/running-applications.md#troubleshooting)
