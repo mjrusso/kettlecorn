@@ -39,6 +39,12 @@
   allows public addresses. For HTTP, hostname requests allowed by resolved
   address require a direct connection. `kettlecorn-run` takes
   `--network-allow` and `--http-allow`.
+* Runtime downloads use Mint and support `http://` proxies configured
+  through `https_proxy` or `HTTPS_PROXY` for HTTPS downloads, and
+  `http_proxy` or `HTTP_PROXY` for HTTP mirrors. Loopback hosts and entries
+  in `no_proxy` or `NO_PROXY` are reached directly.
+* The HTTP grant sends guest requests through the proxy in the
+  launcher's environment.
 * Remove VM private directories faster on shutdown and log cleanup failures.
 
 ## 0.2.0

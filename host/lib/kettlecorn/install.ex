@@ -5,7 +5,9 @@ defmodule Kettlecorn.Install do
   `runtime/1` downloads `kettlecorn-runtime-<version>-<system>.tar.gz`, or
   reads it from `:archive`, and verifies its SHA-256 against the package's
   `priv/checksums.txt`. Configure `:release_base_url` for a mirror with the
-  same release layout. The archive includes the launcher; no separate
+  same release layout. Downloads use the proxy in `https_proxy` or
+  `HTTPS_PROXY` (`http_proxy` or `HTTP_PROXY` for an `http://` mirror),
+  except for hosts in `no_proxy` or `NO_PROXY`. The archive includes the launcher; no separate
   Wasmtime installation is needed.
   """
 
@@ -14,6 +16,8 @@ defmodule Kettlecorn.Install do
   alias Kettlecorn.{Dir, Runtime}
 
   @release_base "https://github.com/mjrusso/kettlecorn/releases/download"
+  @connect_timeout 30_000
+  @timeout 600_000
 
   @doc "Release archive name for this platform."
   def archive_name do
@@ -152,22 +156,218 @@ defmodule Kettlecorn.Install do
   end
 
   defp download(url) do
-    {:ok, _} = Application.ensure_all_started([:inets, :ssl])
+    {:ok, _} = Application.ensure_all_started(:ssl)
     Logger.info("kettlecorn: downloading #{url}")
+    get(url, cacerts(), 5)
+  end
 
-    ssl = [
-      verify: :verify_peer,
-      cacerts: :public_key.cacerts_get(),
-      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
-    ]
+  defp cacerts do
+    :public_key.cacerts_get()
+  rescue
+    _ -> []
+  end
 
-    http = [ssl: ssl, autoredirect: true, connect_timeout: 30_000, timeout: 600_000]
-
-    case :httpc.request(:get, {String.to_charlist(url), []}, http, body_format: :binary) do
-      {:ok, {{_, 200, _}, _headers, body}} -> {:ok, body}
-      {:ok, {{_, status, _}, _, _}} -> {:error, "downloading #{url}: HTTP #{status}"}
+  # Follows redirects itself, choosing the proxy and its credentials for each URL.
+  defp get(url, cacerts, redirects) do
+    with {:ok, uri} <- download_uri(url),
+         :ok <- check_cacerts(uri, cacerts),
+         {:ok, response} <- request(uri, cacerts) do
+      handle(response, uri, cacerts, redirects)
+    else
+      {:error, reason} when is_binary(reason) -> {:error, "downloading #{url}: #{reason}"}
       {:error, reason} -> {:error, "downloading #{url}: #{inspect(reason)}"}
     end
+  end
+
+  defp handle({200, _headers, body}, _uri, _cacerts, _redirects), do: {:ok, body}
+
+  defp handle({status, headers, _body}, uri, cacerts, redirects)
+       when status in [301, 302, 303, 307, 308] and redirects > 0 do
+    # Parsed strictly before merging: URI.merge/2 parses a string leniently.
+    with {_, location} <- List.keyfind(headers, "location", 0),
+         {:ok, reference} <- URI.new(location) do
+      get(to_string(URI.merge(uri, reference)), cacerts, redirects - 1)
+    else
+      nil -> {:error, "downloading #{uri}: HTTP #{status} without a location"}
+      {:error, _part} -> {:error, "downloading #{uri}: invalid redirect location"}
+    end
+  end
+
+  defp handle({status, _headers, _body}, uri, _cacerts, _redirects),
+    do: {:error, "downloading #{uri}: HTTP #{status}"}
+
+  defp check_cacerts(%URI{scheme: "https"}, []),
+    do:
+      {:error,
+       "no CA certificates found on this host; install them, " <>
+         "or install from a downloaded archive with --archive"}
+
+  defp check_cacerts(_uri, _cacerts), do: :ok
+
+  defp request(uri, cacerts) do
+    scheme = if uri.scheme == "http", do: :http, else: :https
+
+    with {:ok, proxy} <- route(uri) do
+      tls = if scheme == :https, do: [cacerts: cacerts], else: []
+
+      options =
+        [mode: :passive, protocols: [:http1], transport_opts: [timeout: @connect_timeout] ++ tls] ++
+          proxy
+
+      deadline = System.monotonic_time(:millisecond) + @timeout
+
+      with {:ok, conn} <- Mint.HTTP.connect(scheme, uri.host, uri.port, options) do
+        try do
+          path = URI.to_string(%URI{path: uri.path || "/", query: uri.query})
+
+          with {:ok, conn, ref} <- Mint.HTTP.request(conn, "GET", path, [], nil),
+               do: receive_response(conn, ref, deadline, {nil, [], []})
+        after
+          Mint.HTTP.close(conn)
+        end
+      end
+    end
+    |> case do
+      {:error, %_{} = error} -> {:error, Exception.message(error)}
+      {:error, _conn, error} -> {:error, Exception.message(error)}
+      result -> result
+    end
+  end
+
+  defp download_uri(url) do
+    case URI.new(url) do
+      {:ok, %URI{scheme: scheme, host: host, port: port} = uri}
+      when scheme in ["http", "https"] and host not in [nil, ""] and port in 1..65_535 ->
+        {:ok, uri}
+
+      _ ->
+        {:error, "not an http:// or https:// URL with a host"}
+    end
+  end
+
+  defp receive_response(conn, ref, deadline, response) do
+    timeout = deadline - System.monotonic_time(:millisecond)
+
+    if timeout <= 0 do
+      {:error, "the download timed out"}
+    else
+      case Mint.HTTP.recv(conn, 0, timeout) do
+        {:ok, conn, responses} ->
+          responses
+          |> Enum.reduce_while(response, &collect(&1, &2, ref))
+          |> continue(conn, ref, deadline)
+
+        {:error, _conn, error, _responses} ->
+          {:error, error}
+      end
+    end
+  end
+
+  # A status starts a response: informational responses come before the final one.
+  defp collect({:status, ref, status}, {_status, _headers, body}, ref),
+    do: {:cont, {status, [], body}}
+
+  defp collect({:headers, ref, more}, {status, headers, body}, ref),
+    do: {:cont, {status, headers ++ more, body}}
+
+  defp collect({:data, ref, data}, {status, headers, body}, ref),
+    do: {:cont, {status, headers, [data | body]}}
+
+  defp collect({:done, ref}, response, ref), do: {:halt, {:done, response}}
+  defp collect({:error, ref, error}, _response, ref), do: {:halt, {:error, error}}
+
+  defp continue({:done, {status, headers, body}}, _conn, _ref, _deadline),
+    do: {:ok, {status, headers, body |> Enum.reverse() |> IO.iodata_to_binary()}}
+
+  defp continue({:error, error}, _conn, _ref, _deadline), do: {:error, error}
+
+  defp continue(response, conn, ref, deadline),
+    do: receive_response(conn, ref, deadline, response)
+
+  defp route(%URI{scheme: scheme, host: host}) do
+    name = if scheme == "http", do: "http_proxy", else: "https_proxy"
+
+    case env(name) do
+      nil ->
+        {:ok, []}
+
+      {variable, proxy} ->
+        if direct?(host |> String.downcase() |> String.trim_trailing(".")),
+          do: {:ok, []},
+          else: proxy_route(variable, proxy)
+    end
+  end
+
+  # Errors name the variable, never its value, which can hold credentials.
+  defp proxy_route(variable, proxy) do
+    invalid = &{:error, "invalid HTTP proxy in #{variable}: #{&1}"}
+
+    case URI.new(if String.contains?(proxy, "://"), do: proxy, else: "http://" <> proxy) do
+      {:ok, %URI{scheme: "http", host: host, port: port} = uri}
+      when host not in [nil, ""] and port in 1..65_535 ->
+        {:ok, [proxy: {:http, host, port, []}, proxy_headers: proxy_auth(uri.userinfo)]}
+
+      {:ok, %URI{scheme: "http"}} ->
+        invalid.("bad host or port")
+
+      {:ok, _uri} ->
+        invalid.("only http:// proxies are supported")
+
+      # URI.new/1's reason quotes the value, which can hold credentials.
+      {:error, _reason} ->
+        invalid.("bad host or port")
+    end
+  end
+
+  defp env(name) do
+    Enum.find_value([name, String.upcase(name)], fn variable ->
+      case String.trim(System.get_env(variable, "")) do
+        "" -> nil
+        value -> {variable, value}
+      end
+    end)
+  end
+
+  # Match on label boundaries so a domain entry covers only its own subdomains.
+  defp direct?(host) do
+    loopback =
+      host == "localhost" or String.ends_with?(host, ".localhost") or
+        loopback_address?(host |> String.trim_leading("[") |> String.trim_trailing("]"))
+
+    {_variable, no_proxy} = env("no_proxy") || {"no_proxy", ""}
+
+    entries =
+      for entry <- String.split(no_proxy, ","),
+          entry = entry |> String.trim() |> String.trim_leading("*.") |> String.trim_leading("."),
+          entry = String.trim_trailing(entry, "."),
+          entry != "",
+          do: String.downcase(entry)
+
+    loopback or "*" in entries or
+      Enum.any?(entries, &(host == &1 or String.ends_with?(host, "." <> &1)))
+  end
+
+  defp loopback_address?(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, {127, _, _, _}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0xFFFF, high, _low}} -> div(high, 256) == 127
+      _ -> false
+    end
+  end
+
+  defp proxy_auth(nil), do: []
+
+  # Split before decoding, so an encoded colon stays in its part.
+  defp proxy_auth(userinfo) do
+    [user, password] =
+      case String.split(userinfo, ":", parts: 2) do
+        [user, password] -> [user, password]
+        [user] -> [user, ""]
+      end
+
+    credentials = Base.encode64(URI.decode(user) <> ":" <> URI.decode(password))
+    [{"proxy-authorization", "Basic " <> credentials}]
   end
 
   defp verify(archive, name, expected) do

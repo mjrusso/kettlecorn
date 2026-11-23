@@ -60,6 +60,7 @@ defmodule Kettlecorn.MixProject do
   # nix/host-tests.nix fetches only test dependencies; check tools stay in dev.
   defp deps do
     [
+      {:mint, "~> 1.11"},
       {:nimble_options, "~> 1.2"},
       {:stream_data, "~> 1.2", only: :test},
       {:benchee, "~> 1.3", only: :bench},

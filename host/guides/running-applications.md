@@ -291,6 +291,13 @@ guest files. The launcher caches compiled components in a private per-user
 directory; see [compilation cache](sandbox.md#compilation-cache).
 Start and stop a VM as the deployment user to warm it before serving requests.
 
+`mix kettlecorn.install` and `Kettlecorn.Install.runtime/1` download
+through the proxy in `https_proxy` or `HTTPS_PROXY` (`http_proxy` or
+`HTTP_PROXY` for an `http://` mirror), skipping hosts in `no_proxy` or
+`NO_PROXY`; credentials in the proxy URL are sent to the proxy.
+`Runtime::install` in Rust uses the proxy variables its HTTP client reads,
+`ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY`.
+
 ## Offline deployment
 
 Runtime discovery and VM startup use files already on disk. Guest
