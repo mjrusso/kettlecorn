@@ -160,6 +160,9 @@
           rustfmt
           clippy
           pkg-config
+        ] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          # unshare, for `just release-smoke-offline`.
+          util-linux
         ];
 
         devPackages = [

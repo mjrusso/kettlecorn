@@ -1,34 +1,47 @@
 use anyhow::{Context, Result, bail, ensure};
 use kettlecorn::{Error, EvalOptions, Runtime, Value, VmOptions};
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// With `--archive PATH`, both installers install that file instead of
+// downloading; `just release-smoke-offline` runs it without network access.
 fn main() -> Result<()> {
-    match env::args().nth(1).as_deref() {
-        None => smoke(),
-        Some("install-and-boot") => {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => smoke(None),
+        ["--archive", archive] => smoke(Some(Path::new(archive).canonicalize()?)),
+        ["install-and-boot", ref archive @ ..] => {
             ensure!(
                 matches!(Runtime::find(), Err(Error::RuntimeNotFound(_))),
                 "expected an empty runtime cache"
             );
-            Runtime::install()?;
+            match archive {
+                [] => Runtime::install()?,
+                [archive] => Runtime::install_from_archive(archive)?,
+                _ => bail!("install-and-boot takes at most an archive path"),
+            };
             boot(Runtime::find()?)
         }
-        Some("boot") => boot(Runtime::find()?),
-        Some(argument) => bail!("unknown release smoke action: {argument}"),
+        ["boot"] => boot(Runtime::find()?),
+        _ => bail!("unknown release smoke arguments: {args:?}"),
     }
 }
 
-fn smoke() -> Result<()> {
-    ensure!(cfg!(target_os = "linux"), "run release-smoke-rust on Linux");
+fn smoke(archive: Option<PathBuf>) -> Result<()> {
+    ensure!(
+        cfg!(target_os = "linux"),
+        "run the release smoke checks on Linux"
+    );
     let caches = tempfile::tempdir().context("create isolated runtime caches")?;
     let executable = env::current_exe()?;
     let host = Path::new(env!("CARGO_MANIFEST_DIR")).join("../host");
 
     let rust_cache = caches.path().join("rust");
     run(
-        Command::new(&executable).arg("install-and-boot"),
+        Command::new(&executable)
+            .arg("install-and-boot")
+            .args(&archive),
         &rust_cache,
     )?;
     run(
@@ -41,12 +54,12 @@ fn smoke() -> Result<()> {
     )?;
 
     let elixir_cache = caches.path().join("elixir");
-    run(
-        Command::new("mix")
-            .current_dir(&host)
-            .arg("kettlecorn.install"),
-        &elixir_cache,
-    )?;
+    let mut install = Command::new("mix");
+    install.current_dir(&host).arg("kettlecorn.install");
+    if let Some(archive) = &archive {
+        install.arg("--archive").arg(archive);
+    }
+    run(&mut install, &elixir_cache)?;
     run(Command::new(executable).arg("boot"), &elixir_cache)
 }
 

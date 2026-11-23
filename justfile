@@ -222,6 +222,20 @@ check-release-checksums:
 release-smoke-rust: check-release-checksums
     cargo run --locked --manifest-path rust/Cargo.toml --features installer --example release-install-smoke
 
+# Install a staged release archive with both installers' archive options,
+# without network access, and boot each installation.
+release-smoke-offline archive: check-release-checksums
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! unshare --net --map-root-user true; then
+      echo 'Cannot create an unprivileged user and network namespace: this host disallows them' >&2
+      echo '(for example, kernel.apparmor_restrict_unprivileged_userns on Ubuntu). This is a host' >&2
+      echo 'setting, not an installer failure.' >&2
+      exit 1
+    fi
+    cargo build --locked --manifest-path rust/Cargo.toml --features installer --example release-install-smoke
+    unshare --net --map-root-user cargo run --offline --locked --manifest-path rust/Cargo.toml --features installer --example release-install-smoke -- --archive {{quote(archive)}}
+
 test-runtime-cache archive:
     #!/usr/bin/env bash
     set -euo pipefail

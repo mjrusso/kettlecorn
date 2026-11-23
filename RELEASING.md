@@ -79,8 +79,20 @@ specifies another directory.
    Run `just check-release-checksums` to check coverage on its own.
    The smoke check downloads and verifies the published archive with both
    installers in fresh caches, verifies discovery across the Rust and Elixir APIs,
-   and boots each installation from Rust. Then check the Hex package from
-   `host/`:
+   and boots each installation from Rust. On Linux, also check installation
+   from a file without network access:
+
+   ```sh
+   version=$(cat host/VERSION)
+   archive="kettlecorn-runtime-$version-$(uname -m)-linux.tar.gz"
+   curl -fsSLO "https://github.com/mjrusso/kettlecorn/releases/download/v$version/$archive"
+   just release-smoke-offline "$archive"
+   ```
+
+   The recipe uses fresh caches and runs both installers in a network
+   namespace. Each installer verifies the archive against its bundled
+   checksum. The host must allow `unshare --net --map-root-user`.
+   Then check the Hex package from `host/`:
 
    ```sh
    mix docs --warnings-as-errors
