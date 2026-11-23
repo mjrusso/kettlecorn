@@ -118,6 +118,7 @@ starting VMs.
 | Method | Use |
 |---|---|
 | `Runtime::install()` | Download a matching release or reuse the cached installation; requires the `installer` feature |
+| `Runtime::install_from_archive(path)` | Install a release archive already on disk into the cache, for hosts without network access; requires the `installer` feature |
 | `Runtime::find()` | Load a runtime from the environment or user cache without downloading |
 | `Runtime::load(path)` | Load a runtime bundled with your application or built locally |
 
@@ -131,7 +132,9 @@ under `~/Library/Caches`. Both use `kettlecorn/runtime-<version>` within that
 directory. Cached releases must match the crate version and host platform.
 
 The installer verifies the release archive's SHA-256 against the checksum
-shipped with the crate before installing it atomically in the cache. It leaves
+shipped with the crate before installing it atomically in the cache, for a
+download or an archive on disk. See
+[offline deployment](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#offline-deployment). It leaves
 invalid cache entries in place; move an invalid entry aside before retrying.
 `Runtime::install_with_progress` reports cumulative downloaded bytes and an
 optional total byte count. Both installation methods block; call them on a

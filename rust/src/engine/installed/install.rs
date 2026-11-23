@@ -30,42 +30,53 @@ impl Runtime {
     /// the total byte count when available. The callback runs on the calling thread
     /// and is skipped when the cache is ready before the download starts.
     pub fn install_with_progress(progress: impl FnMut(u64, Option<u64>)) -> Result<Self, Error> {
-        install(progress)
+        install(checksum, open_release, progress)
+    }
+
+    /// Installs a local release archive into the user cache. Requires the `installer` feature.
+    /// If the cache already holds a compatible runtime, returns it without reading the archive.
+    /// Otherwise, verifies the archive against the SHA-256 bundled for this crate version
+    /// and platform.
+    ///
+    /// This is blocking. Call it on a background thread from an async runtime or GUI.
+    pub fn install_from_archive(archive: impl AsRef<Path>) -> Result<Self, Error> {
+        install_file(archive.as_ref(), checksum)
     }
 }
 
-fn install(progress: impl FnMut(u64, Option<u64>)) -> Result<Runtime, Error> {
+/// The CI cache handoff passes its locally built archive's digest.
+fn install_file<'a>(
+    archive: &Path,
+    checksum: impl FnOnce(&str) -> Result<&'a str>,
+) -> Result<Runtime, Error> {
+    let open = |_name: &str| {
+        let file =
+            fs::File::open(archive).with_context(|| format!("open {}", archive.display()))?;
+        Ok((file, None))
+    };
+    install(checksum, open, |_, _| {})
+}
+
+/// `open` returns the archive's bytes, and their total length when the source knows it.
+fn install<'a, R: Read>(
+    checksum: impl FnOnce(&str) -> Result<&'a str>,
+    open: impl FnOnce(&str) -> Result<(R, Option<u64>)>,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<Runtime, Error> {
     let directory = installed_dir().map_err(Error::InstallRuntime)?;
     match find_cached(&directory) {
-        Err(Error::RuntimeNotFound(_)) => match download(&directory, progress)? {
-            Some(runtime) => Ok(runtime),
-            None => find_cached(&directory),
-        },
+        Err(Error::RuntimeNotFound(_)) => {
+            let platform = release_platform().map_err(Error::InstallRuntime)?;
+            let name = format!("kettlecorn-runtime-{RELEASE_VERSION}-{platform}.tar.gz");
+            let expected = checksum(&name).map_err(Error::InstallRuntime)?;
+            let (reader, total) = open(&name).map_err(Error::InstallRuntime)?;
+            install_archive(&directory, reader, expected, |bytes| progress(bytes, total))
+        }
         result => result,
     }
 }
 
-fn download(
-    directory: &Path,
-    mut progress: impl FnMut(u64, Option<u64>),
-) -> Result<Option<Runtime>, Error> {
-    let (mut response, expected) = fetch().map_err(Error::InstallRuntime)?;
-    let total = response
-        .headers()
-        .get(ureq::http::header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok()?.parse().ok());
-    install_archive(
-        directory,
-        response.body_mut().as_reader(),
-        expected,
-        |bytes| progress(bytes, total),
-    )
-}
-
-fn fetch() -> Result<(ureq::http::Response<ureq::Body>, &'static str)> {
-    let platform = release_platform()?;
-    let name = format!("kettlecorn-runtime-{RELEASE_VERSION}-{platform}.tar.gz");
-    let expected = checksum(&name)?;
+fn open_release(name: &str) -> Result<(impl Read + use<>, Option<u64>)> {
     let url = format!("{RELEASES}/v{RELEASE_VERSION}/{name}");
     let config = ureq::Agent::config_builder()
         .https_only(true)
@@ -81,7 +92,11 @@ fn fetch() -> Result<(ureq::http::Response<ureq::Body>, &'static str)> {
         .get(&url)
         .call()
         .with_context(|| format!("download {url}"))?;
-    Ok((response, expected))
+    let total = response
+        .headers()
+        .get(ureq::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse().ok());
+    Ok((response.into_body().into_reader(), total))
 }
 
 fn checksum(archive: &str) -> Result<&'static str> {
@@ -97,7 +112,7 @@ fn install_archive(
     reader: impl Read,
     expected: &str,
     progress: impl FnMut(u64),
-) -> Result<Option<Runtime>, Error> {
+) -> Result<Runtime, Error> {
     let parent = directory
         .parent()
         .context("runtime cache needs a parent")
@@ -115,9 +130,11 @@ fn install_archive(
     match symlink(target, directory) {
         Ok(()) => {
             let _ = staging.keep();
-            Ok(Some(runtime))
+            Ok(runtime)
         }
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(None),
+        // Another process published first: return its entry, or the reason it
+        // can't be used.
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => find_cached(directory),
         Err(error) => Err(error)
             .context("publish runtime cache entry")
             .map_err(Error::InstallRuntime),
@@ -220,7 +237,7 @@ mod tests {
         let destination = cache.path().join("runtime");
         let bytes = fixture_archive(serde_json::json!({}), "beam.wasm \r\n")?;
         let expected = format!("{:x}", Sha256::digest(&bytes));
-        let runtime = install_archive(&destination, &bytes[..], &expected, |_| {})?.unwrap();
+        let runtime = install_archive(&destination, &bytes[..], &expected, |_| {})?;
         assert!(runtime.component(false).ends_with("beam.wasm"));
         assert_eq!(
             Runtime::load(&destination)?.component(false),
@@ -315,10 +332,13 @@ mod tests {
 
         fs::remove_file(&directory)?;
         symlink("missing", &directory)?;
-        assert!(install_archive(&directory, &bytes[..], &expected, |_| {})?.is_none());
+        assert!(matches!(
+            install_archive(&directory, &bytes[..], &expected, |_| {}),
+            Err(Error::InvalidRuntime(_))
+        ));
         assert_eq!(fs::read_link(&directory)?, Path::new("missing"));
         fs::remove_file(&directory)?;
-        assert!(install_archive(&directory, &bytes[..], &expected, |_| {})?.is_some());
+        install_archive(&directory, &bytes[..], &expected, |_| {})?;
         assert_ne!(directory.canonicalize()?, first);
         find_cached(&first)?;
         find_cached(&directory)?;
@@ -357,12 +377,8 @@ mod tests {
                 winner = Some(install_archive(&directory, &bytes[..], &expected, |_| {}));
             }
         })?;
-        assert!(outer.is_none());
-        let winner = winner.unwrap()?.unwrap();
-        assert_eq!(
-            find_cached(&directory)?.component(false),
-            winner.component(false)
-        );
+        let winner = winner.unwrap()?;
+        assert_eq!(outer.component(false), winner.component(false));
         let generations = cache
             .path()
             .join(format!("runtime-{RELEASE_VERSION}.versions"));
@@ -404,12 +420,8 @@ mod tests {
             if downloaded == 0 {
                 fs::write(&directory, "original").unwrap();
             }
-        })?;
-        assert!(result.is_none());
-        assert!(matches!(
-            find_cached(&directory),
-            Err(Error::InvalidRuntime(_))
-        ));
+        });
+        assert!(matches!(result, Err(Error::InvalidRuntime(_))));
         assert_eq!(fs::read_to_string(directory)?, "original");
         let generations = cache
             .path()
@@ -426,7 +438,7 @@ mod tests {
         let workspace = PathBuf::from(workspace);
         let archive = std::env::var_os("KETTLECORN_TEST_RUNTIME_ARCHIVE")
             .context("cache handoff requires a local release archive")?;
-        let bytes = fs::read(archive).context("read local release archive")?;
+        let bytes = fs::read(&archive).context("read local release archive")?;
         let cache = workspace.join(if cfg!(target_os = "macos") {
             "home/Library/Caches"
         } else {
@@ -457,8 +469,10 @@ mod tests {
         Runtime::find()?;
         fs::remove_file(&directory)?;
 
+        // The cold-cache path Runtime::install_from_archive takes, with this
+        // archive's digest in place of the bundled one.
         let checksum = format!("{:x}", Sha256::digest(&bytes));
-        assert!(install_archive(&directory, &bytes[..], &checksum, |_| {})?.is_some());
+        install_file(Path::new(&archive), |_| Ok(&checksum))?;
         elixir("find")?;
 
         fs::write(workspace.join("complete"), [])?;

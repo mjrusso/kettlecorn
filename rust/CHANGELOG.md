@@ -23,6 +23,9 @@
   `{:error, "unknown host function"}`, the same reply as the Elixir host.
 * Launcher processes share cached compiled code. The first start after
   upgrading recompiles the runtime.
+* Add `Runtime::install_from_archive`, which installs a release archive
+  already on disk into the cache, verified against the same checksum as a
+  download, for hosts without network access.
 
 ## 0.2.0
 
