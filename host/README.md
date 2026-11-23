@@ -90,7 +90,8 @@ The example sets two limits for the whole VM:
 | `max_lifetime: 30_000` | Lifetime of 30 seconds. |
 
 Both include startup and apply across all evaluations in that VM. Use
-`Kettlecorn.stats(vm)` to read fuel and memory while it runs.
+`Kettlecorn.stats(vm)` to read fuel and memory while it runs. To cap a single
+evaluation, pass `max_reductions: n` to `Kettlecorn.eval/3`.
 
 `start_link/1` links the VM to its caller: a resource limit or guest crash can
 terminate that caller. `Kettlecorn.run/2` starts a fresh VM, evaluates code

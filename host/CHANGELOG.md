@@ -15,6 +15,9 @@
   reports later on-demand loads to the owner as `{:late_load, module}`
   events. `preload: :strict` also stops the VM on a late load.
   The CLI supports `--preload on|strict` and reports late loads on stderr.
+* `Kettlecorn.eval/3` accepts `max_reductions` and reports charged
+  reductions in evaluation replies. An evaluation that exceeds the
+  limit fails with `"kind" => "reductions"`.
 * Launcher processes share cached compiled code, reducing memory per VM.
   The first start after upgrading recompiles the runtime.
 * Remove VM private directories faster on shutdown and log cleanup failures.

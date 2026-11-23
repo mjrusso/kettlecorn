@@ -244,6 +244,28 @@ Rust's `EvalOptions::timeout` sets the guest evaluation timeout and defaults
 to five seconds. Both APIs derive additional proxy and reply deadlines;
 see the [protocol specification](https://github.com/mjrusso/kettlecorn/blob/main/PROTOCOL.md#host--vm).
 
+## Evaluation reduction limits
+
+Pass `max_reductions: n` to `Kettlecorn.eval/3`, or set
+`EvalOptions::max_reductions` in Rust. The guest charges the evaluation,
+its descendants, and its output callbacks to the same budget. The maximum
+limit is 2^63 - 1. When a charge takes the total above the limit, the
+evaluation fails with kind `reductions` and the VM stays up. The scheduler
+charges work in slices, so the reported count can exceed the limit.
+
+The count covers work charged before the budget closes. If the budget was
+exceeded, the scheduler kills other charged processes when they next
+account for reductions. The evaluator also attempts to kill descendants,
+as it does on timeout. Fuel and `max_lifetime` still apply to the whole VM.
+
+Reduction counts can be repeatable for single-process evaluations that
+start from the same state, receive the same inputs, and run the same code
+on the same runtime. The state includes the code the VM has loaded.
+On-demand loading can change the measured reduction count. Compare counts from evaluations that
+follow the same earlier evaluations on a fresh VM, or use `preload: true`.
+Wall-clock timeouts and external state can also affect how much work
+completes.
+
 ## Process isolation
 
 ### Elixir host and CLI

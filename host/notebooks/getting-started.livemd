@@ -177,6 +177,19 @@ traces its descendants and attempts to kill them. The VM survives:
 Guest code can disable tracing, so evaluation cleanup is best effort.
 Use VM limits to bound untrusted code.
 
+Use `max_reductions` to limit the work in one evaluation. The reply reports
+the reductions charged, and the VM can still run another evaluation.
+
+```elixir
+{:error, %{"kind" => "reductions", "reductions" => used}} =
+  Kettlecorn.eval(vm, "Stream.repeatedly(fn -> 1 end) |> Stream.run()",
+    max_reductions: 20_000
+  )
+
+true = used > 20_000
+{:ok, %{"value" => :still_here}} = Kettlecorn.eval(vm, ":still_here")
+```
+
 The VM as a whole has limits too: `:max_memory` (bytes of WebAssembly
 memory), `:max_lifetime` (wall-clock milliseconds) and `:max_fuel` (CPU, in
 Wasmtime fuel units). These limits can stop a VM without affecting the

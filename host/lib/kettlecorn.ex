@@ -101,6 +101,9 @@ defmodule Kettlecorn do
     start.(VM, vm_opts, Keyword.put(Keyword.take(opts, [:name]), :timeout, :infinity))
   end
 
+  # The guest's budgets count in a signed 64-bit integer.
+  @max_reductions 0x7FFF_FFFF_FFFF_FFFF
+
   @eval_schema NimbleOptions.new!(
                  timeout: [
                    type: :timeout,
@@ -124,6 +127,16 @@ defmodule Kettlecorn do
                    type: {:in, [:elixir, :erlang]},
                    default: :elixir,
                    doc: "Language of the source code."
+                 ],
+                 max_reductions: [
+                   type: {:or, [{:in, 1..@max_reductions}, {:in, [:infinity]}]},
+                   default: :infinity,
+                   doc: """
+                   Reductions the evaluation and the processes it spawns may use
+                   before the guest stops them. Accepts 1 through 2^63 - 1, or
+                   `:infinity`. The scheduler charges work in slices, so the
+                   reported count can exceed the limit.
+                   """
                  ]
                )
 
@@ -131,9 +144,10 @@ defmodule Kettlecorn do
   Evaluates Elixir or Erlang `code` in the guest.
 
   Returns `{:ok, map}` with `"inspected"` (the formatted result), `"output"`
-  (captured standard output) and, for plain data of at most 1,000,000 terms, `"value"`.
-  On failure, returns `{:error, map}` with `"kind"` (`"error"`, `"exit"`,
-  `"throw"` or `"timeout"`), `"message"` and `"output"`.
+  (captured standard output), `"reductions"` (see below) and, for plain data
+  of at most 1,000,000 terms, `"value"`. On failure, returns `{:error, map}`
+  with `"kind"` (`"error"`, `"exit"`, `"throw"`, `"timeout"` or
+  `"reductions"`), `"message"`, `"output"` and `"reductions"`.
 
   Writes to stderr bypass evaluation capture and go to the VM's console output.
   They are available through `take_output/1` and, when an `:owner` is configured,
@@ -174,6 +188,14 @@ defmodule Kettlecorn do
   the code keep running after success. On timeout, the evaluator
   attempts to kill them through tracing, which guest code can disable. Use
   VM limits to bound untrusted code.
+
+  ## Reductions
+
+  `"reductions"` counts work charged to the evaluation, its descendants,
+  and its output callbacks. An evaluation that exceeds the budget fails
+  with `"kind" => "reductions"`. The scheduler charges work in time slices,
+  so the count can exceed the limit. See
+  [Evaluation reduction limits](sandbox.html#evaluation-reduction-limits).
   """
   @spec eval(vm(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def eval(vm, code, opts \\ []) when is_binary(code) do
@@ -188,7 +210,8 @@ defmodule Kettlecorn do
          "timeout_ms" => timeouts.evaluation,
          "finish_timeout_ms" => timeouts.finish,
          "binding" => binding,
-         "language" => language
+         "language" => language,
+         "max_reductions" => opts[:max_reductions]
        }}
 
     case guest_call(vm, "kettlecorn_evaluator", request, timeouts) do

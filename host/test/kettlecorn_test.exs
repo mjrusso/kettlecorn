@@ -25,7 +25,22 @@ defmodule KettlecornTest do
             {:eval, "1", %{"timeout_ms" => 1000, "finish_timeout_ms" => 1000}},
             {:eval, "1", %{"timeout_ms" => 1000, "language" => "elixir"}},
             {:eval, "1",
-             %{"timeout_ms" => 1000, "finish_timeout_ms" => 1000, "language" => "unknown"}}
+             %{"timeout_ms" => 1000, "finish_timeout_ms" => 1000, "language" => "unknown"}},
+            {:eval, "1",
+             %{
+               "timeout_ms" => 1000,
+               "finish_timeout_ms" => 1000,
+               "language" => "elixir",
+               "max_reductions" => 0
+             }},
+            # Budgets count in a signed 64-bit integer.
+            {:eval, "1",
+             %{
+               "timeout_ms" => 1000,
+               "finish_timeout_ms" => 1000,
+               "language" => "elixir",
+               "max_reductions" => 2 ** 63
+             }}
           ] do
         assert {:ok, {:error, %{"kind" => "badarg"}}} =
                  Kettlecorn.call(vm, "kettlecorn_evaluator", request)
