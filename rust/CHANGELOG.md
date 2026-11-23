@@ -16,6 +16,11 @@
   `max_reductions: None` or `..Default::default()`. `Evaluation::reductions`
   reports the charged count. When an evaluation exceeds the limit,
   `Evaluation::result` holds a `ScriptError` with kind `reductions`.
+* A guest timeout or caller exit drops the host callback's future and
+  releases its `max_host_calls` slot.
+* **Breaking:** a host call to an unregistered name returns
+  `{:error, "no host handler"}` instead of
+  `{:error, "unknown host function"}`, the same reply as the Elixir host.
 * Launcher processes share cached compiled code. The first start after
   upgrading recompiles the runtime.
 

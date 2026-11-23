@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, WriteHalf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot};
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 use tokio::time::{Instant, timeout, timeout_at};
 
 use super::HostFunction;
@@ -217,6 +217,9 @@ pub(super) async fn run(
     let mut current: Option<Writing> = None;
     let mut pending: HashMap<u32, Pending> = HashMap::new();
     let mut calls = JoinSet::<(Vec<u8>, super::HostResult, OwnedSemaphorePermit)>::new();
+    // Running callbacks by reply token, so a cancel notice can abort one. A
+    // result is sent only while its task is still the token's entry.
+    let mut running: HashMap<Vec<u8>, AbortHandle> = HashMap::new();
     let host_slots = Arc::new(Semaphore::new(callbacks.capacity));
     let rejection_slots = Arc::new(Semaphore::new(REJECTIONS));
     let mut reported_decode_error = false;
@@ -287,9 +290,19 @@ pub(super) async fn run(
                     }
                     None
                 }
-                Some(completed) = calls.join_next(), if !exiting => {
-                    let (token, result, slot) = completed.context("join host callback")?;
-                    send_host_reply(&mut priority, &token, result, slot)?;
+                Some(completed) = calls.join_next_with_id(), if !exiting => {
+                    match completed {
+                        Ok((id, (token, result, slot))) => {
+                            // Otherwise the call was cancelled after it finished.
+                            if running.get(&token).is_some_and(|handle| handle.id() == id) {
+                                running.remove(&token);
+                                send_host_reply(&mut priority, &token, result, slot)?;
+                            }
+                        }
+                        // Aborted by a cancel notice; dropping the call released its slot.
+                        Err(error) if error.is_cancelled() => {}
+                        Err(error) => return Err(error).context("join host callback"),
+                    }
                     None
                 }
                 Some(frame) = frames.next() => {
@@ -350,10 +363,15 @@ pub(super) async fn run(
                         Some(Event::Reply { id, result }) => {
                             finish(&mut pending, id, result.map_err(Error::Protocol));
                         }
+                        // Tokens come from the guest; a second call with a live
+                        // token is dropped, accepted or not, since a reply would
+                        // reach the first call's caller.
+                        Some(Event::HostCall { token, .. } | Event::RejectedHostCall(token))
+                            if running.contains_key(&token) => {}
                         Some(Event::HostCall { name, args, token }) => {
                             if let Ok(slot) = host_slots.clone().try_acquire_owned() {
                                 let Some(function) = callbacks.functions.get(&name).cloned() else {
-                                    send_host_reply(&mut priority, &token, Err("unknown host function".into()), slot)?;
+                                    send_host_reply(&mut priority, &token, Err("no host handler".into()), slot)?;
                                     continue;
                                 };
                                 let started = Instant::now();
@@ -366,11 +384,13 @@ pub(super) async fn run(
                                     send_host_reply(&mut priority, &token, result, slot)?;
                                 } else {
                                     let waiting = timeout(callbacks.deadline.saturating_sub(started.elapsed()), call);
-                                    calls.spawn(async move {
+                                    let key = token.clone();
+                                    let handle = calls.spawn(async move {
                                         let result = waiting.await
                                             .unwrap_or_else(|_| Err("host function deadline exceeded".into()));
                                         (token, result, slot)
                                     });
+                                    running.insert(key, handle);
                                 }
                             } else {
                                 reject_host_call(&mut priority, &rejection_slots, &token, "host call capacity exhausted", &output, &mut reported_overload)?;
@@ -378,6 +398,11 @@ pub(super) async fn run(
                         }
                         Some(Event::RejectedHostCall(token)) => {
                             reject_host_call(&mut priority, &rejection_slots, &token, "invalid or oversized host call arguments", &output, &mut reported_overload)?;
+                        }
+                        Some(Event::HostCallCancel(token)) => {
+                            if let Some(handle) = running.remove(&token) {
+                                handle.abort();
+                            }
                         }
                         _ => {}
                     }

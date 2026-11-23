@@ -494,3 +494,47 @@ async fn a_fatal_halt_reports_its_reason() {
         "{error:#}"
     );
 }
+
+#[tokio::test]
+async fn a_host_callback_is_dropped_when_its_caller_exits() {
+    struct Dropped(Arc<Notify>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+    let Some(directory) = std::env::var_os("KETTLECORN_TEST_RUNTIME") else {
+        return;
+    };
+    let runtime = Runtime::load(directory).unwrap();
+    let mut options = VmOptions::default();
+    options.host_call_timeout = Duration::from_secs(120);
+    let dropped = Arc::new(Notify::new());
+    let guard = dropped.clone();
+    options.register("hold", move |_| {
+        let guard = Dropped(guard.clone());
+        async move {
+            let _guard = guard;
+            std::future::pending().await
+        }
+    });
+    let vm = runtime.start(options).await.unwrap();
+    // The evaluation times out while its host call waits, so the guest
+    // cancels the call.
+    let short = EvalOptions {
+        timeout: Duration::from_millis(500),
+        ..Default::default()
+    };
+    let result = vm
+        .eval(
+            r#"Kettlecorn.Host.call("hold", %{}, timeout: 60_000)"#,
+            short,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.result.unwrap_err().kind, "timeout");
+    tokio::time::timeout(Duration::from_secs(30), dropped.notified())
+        .await
+        .expect("the callback was not dropped");
+    vm.shutdown().await.result.unwrap();
+}

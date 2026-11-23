@@ -39,6 +39,8 @@ pub(crate) enum Event<'a> {
         token: Vec<u8>,
     },
     RejectedHostCall(Vec<u8>),
+    /// The guest stopped waiting for the host call with this reply token.
+    HostCallCancel(Vec<u8>),
     LateLoad(String),
 }
 
@@ -130,6 +132,12 @@ fn message(payload: &[u8]) -> Result<Option<Event<'static>>> {
                 Err(_) => Event::RejectedHostCall(token),
             })
         }
+        "host_call_cancel" => Some(Event::HostCallCancel(
+            token
+                .context("missing host call reply token")?
+                .binary()?
+                .to_vec(),
+        )),
         "vm_message" => Some(Event::GuestMessage(
             data.context("missing guest message data")?.value()?,
         )),

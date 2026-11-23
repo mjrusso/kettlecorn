@@ -502,6 +502,152 @@ async fn guest_exit_aborts_pending_callbacks() {
 }
 
 #[tokio::test]
+async fn a_cancel_notice_aborts_its_callback_and_frees_its_slot() {
+    struct Dropped(Arc<AtomicUsize>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let (mut guest, peer) = tokio::io::duplex(1024);
+    let (_client, inbox) = Client::new(16, None);
+    let (ready, _boot) = oneshot::channel();
+    let (_exit, exited) = oneshot::channel();
+    let started = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let callback: HostFunction = {
+        let (started, dropped) = (started.clone(), dropped.clone());
+        Arc::new(move |_| {
+            started.fetch_add(1, Ordering::Relaxed);
+            let guard = Dropped(dropped.clone());
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        })
+    };
+    let session = tokio::spawn(run(
+        peer,
+        inbox,
+        ready,
+        Callbacks {
+            functions: HashMap::from([("wait".into(), callback)]),
+            deadline: Duration::from_secs(60),
+            capacity: 1,
+        },
+        Duration::from_secs(5),
+        Output::default(),
+        exited,
+    ));
+    let until = |counter: Arc<AtomicUsize>, value: usize| async move {
+        timeout(Duration::from_secs(1), async {
+            while counter.load(Ordering::Relaxed) < value {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok()
+    };
+    guest
+        .write_all(&protocol::host_call_frame("wait", 0))
+        .await
+        .unwrap();
+    assert!(
+        until(started.clone(), 1).await,
+        "the callback did not start"
+    );
+    let cancel = protocol::message_frame(vec![
+        (Value::atom("type"), Value::atom("host_call_cancel")),
+        (Value::atom("reply_to"), Value::Binary(vec![0])),
+    ]);
+    guest.write_all(&cancel).await.unwrap();
+    assert!(
+        until(dropped.clone(), 1).await,
+        "the callback was not aborted"
+    );
+    // With one slot, the next call starts only if the cancelled call freed it.
+    guest
+        .write_all(&protocol::host_call_frame("wait", 1))
+        .await
+        .unwrap();
+    assert!(
+        until(started.clone(), 2).await,
+        "the next callback did not start"
+    );
+    assert!(!session.is_finished());
+    session.abort();
+}
+
+#[tokio::test]
+async fn a_call_reusing_a_live_token_is_dropped() {
+    let (mut guest, peer) = tokio::io::duplex(1024);
+    let (_client, inbox) = Client::new(16, None);
+    let (ready, _boot) = oneshot::channel();
+    let (_exit, exited) = oneshot::channel();
+    let counter = |count: Arc<AtomicUsize>| -> HostFunction {
+        Arc::new(move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+            Box::pin(std::future::pending())
+        })
+    };
+    let (waits, lasts) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let session = tokio::spawn(run(
+        peer,
+        inbox,
+        ready,
+        Callbacks {
+            functions: HashMap::from([
+                ("wait".into(), counter(waits.clone())),
+                ("last".into(), counter(lasts.clone())),
+            ]),
+            deadline: Duration::from_secs(60),
+            capacity: 3,
+        },
+        Duration::from_secs(5),
+        Output::default(),
+        exited,
+    ));
+    // Frames are handled in order, so once "last" starts, the second and
+    // third calls have been handled.
+    guest
+        .write_all(&protocol::host_call_frame("wait", 0))
+        .await
+        .unwrap();
+    guest
+        .write_all(&protocol::host_call_frame("wait", 0))
+        .await
+        .unwrap();
+    let malformed = protocol::message_frame(vec![
+        (Value::atom("type"), Value::atom("host_call")),
+        (Value::atom("name"), Value::from("wait")),
+        (Value::atom("args"), Value::Integer(1.into())),
+        (Value::atom("reply_to"), Value::Binary(vec![0])),
+    ]);
+    guest.write_all(&malformed).await.unwrap();
+    guest
+        .write_all(&protocol::host_call_frame("last", 1))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), async {
+        while lasts.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the last call did not start");
+    assert_eq!(waits.load(Ordering::Relaxed), 1);
+    // Neither the duplicate nor the malformed call was answered.
+    let mut byte = [0];
+    assert!(
+        timeout(Duration::from_millis(200), guest.read_exact(&mut byte))
+            .await
+            .is_err()
+    );
+    assert!(!session.is_finished());
+    session.abort();
+}
+
+#[tokio::test]
 async fn after_the_guest_exits_a_buffered_fatal_frame_ends_the_session_with_its_reason() {
     let (mut guest, peer) = tokio::io::duplex(1024);
     let reason = b"kettlecorn-fatal-test";
