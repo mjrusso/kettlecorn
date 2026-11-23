@@ -44,6 +44,55 @@ defmodule Kettlecorn.PreloadTest do
     assert first == second
   end
 
+  # Preload runs @on_load callbacks before the guest's applications start.
+  @tag :tmp_dir
+  test "a module's @on_load callback can call the host during preload", %{tmp_dir: tmp} do
+    build = Path.join(tmp, "build")
+    ebin = Path.join([build, "on_load_app", "ebin"])
+    File.mkdir_p!(ebin)
+
+    File.write!(
+      Path.join(ebin, "on_load_app.app"),
+      ~s|{application, on_load_app, [{applications, [kernel, stdlib]}, {modules, [on_load_app]}, {vsn, "0.1.0"}]}.\n|
+    )
+
+    # Compiled without loading, so the callback runs only in the guest.
+    source = Path.join(tmp, "on_load_app.erl")
+
+    File.write!(source, """
+    -module(on_load_app).
+    -on_load(ask/0).
+    -export([ask/0, answer/0]).
+    ask() ->
+        {ok, Answer} = 'Elixir.Kettlecorn.Host':call(<<"loaded">>, \#{}),
+        persistent_term:put(on_load_app, Answer).
+    answer() -> persistent_term:get(on_load_app).
+    """)
+
+    {:ok, :on_load_app, beam} = :compile.file(String.to_charlist(source), [:binary])
+    File.write!(Path.join(ebin, "on_load_app.beam"), beam)
+    app = Path.join(tmp, "app")
+
+    assert {:ok, _} =
+             Kettlecorn.Cook.cook(
+               app: :on_load_app,
+               build: build,
+               out: app,
+               runtime: TestRuntime.runtime()
+             )
+
+    test = self()
+
+    handler = fn _args ->
+      send(test, :loaded)
+      {:ok, 42}
+    end
+
+    vm = start_vm(app: app, preload: :strict, handlers: %{"loaded" => handler})
+    assert_received :loaded
+    assert {:ok, %{"value" => 42}} = Kettlecorn.eval(vm, ":on_load_app.answer()")
+  end
+
   test "preload loads the code path at boot and reports later loads" do
     vm = start_vm(preload: true)
 

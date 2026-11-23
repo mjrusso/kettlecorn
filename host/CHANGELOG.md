@@ -5,7 +5,13 @@
 * **Breaking:** protocol version 2. The library refuses earlier runtimes:
   install the matching runtime with `mix kettlecorn.install` and cook
   applications again.
-
+* The guest drops a host-call reply that arrives after the call timed out
+  or its caller exited. An owner's late reply used to reach the caller's
+  mailbox as `{:wasm, {token, result}}`; it still does for a call made
+  before the guest's applications start, such as from an `@on_load`
+  callback during preload, or while the guest's host-call process restarts.
+  A call returns `{:error, :interrupted}` if that process stops while the
+  call waits.
 * `Kettlecorn.stats/1` reports fuel use, linear memory, and launcher RSS
   on Linux.
 * Owners receive `{:kettlecorn, vm, {:stopped, stats}}` when a VM stops.
@@ -18,6 +24,11 @@
 * `Kettlecorn.eval/3` accepts `max_reductions` and reports charged
   reductions in evaluation replies. An evaluation that exceeds the
   limit fails with `"kind" => "reductions"`.
+* Answer guest host calls with named functions (`:handlers`) or a stateful
+  `Kettlecorn.HostHandler` (`:handler`). `:max_host_calls` defaults to four
+  and includes pending cancellations.
+* A guest timeout or caller exit cancels its host call. Owners handling
+  calls manually receive `{:kettlecorn, vm, {:host_call_cancel, reply_to}}`.
 * Launcher processes share cached compiled code, reducing memory per VM.
   The first start after upgrading recompiles the runtime.
 * Remove VM private directories faster on shutdown and log cleanup failures.

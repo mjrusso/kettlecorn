@@ -34,7 +34,8 @@ defmodule Kettlecorn do
   `Kettlecorn.Host.send/1` (see the [Guest API guide](guest-api.html))
   arrive in the `:owner` process as
   `{:kettlecorn, vm, {:message, term}}`, decoded by `Kettlecorn.ETF`. A
-  `Kettlecorn.Host.call/3` in the guest arrives as
+  `Kettlecorn.Host.call/3` in the guest goes to the VM's `:handlers` or
+  `:handler` (see `Kettlecorn.HostHandler`), or, without them, arrives as
   `{:kettlecorn, vm, {:host_call, reply_to, name, args}}`; answer it with
   `reply/3`. Owners call `acknowledge/2` after handling events to release their
   delivery budget; exceeding that budget stops the VM.
@@ -51,6 +52,7 @@ defmodule Kettlecorn do
   alias Kettlecorn.Protocol
   alias Kettlecorn.Timeout
   alias Kettlecorn.VM
+  alias Kettlecorn.VM.HostCalls
 
   require Options
 
@@ -309,14 +311,15 @@ defmodule Kettlecorn do
   its own `{:error, :timeout}`.
 
   Returns `:ok` without confirming delivery. Replies containing atoms not
-  loaded in the guest are rejected, so the call can time out.
+  loaded in the guest are rejected, so the call can time out. A VM started
+  with `:handlers` or `:handler` drops these replies; a
+  `Kettlecorn.HostHandler` answers with `Kettlecorn.HostHandler.reply/2`.
   """
   @spec reply(vm(), binary(), {:ok, term()} | {:error, String.t()}) :: :ok
-  def reply(vm, reply_to, {:ok, _value} = result),
-    do: GenServer.cast(vm, {:send, Protocol.prepare_reply(reply_to, result)})
+  def reply(vm, reply_to, {:ok, _value} = result), do: HostCalls.send_reply(vm, reply_to, result)
 
   def reply(vm, reply_to, {:error, reason} = result) when is_binary(reason),
-    do: GenServer.cast(vm, {:send, Protocol.prepare_reply(reply_to, result)})
+    do: HostCalls.send_reply(vm, reply_to, result)
 
   @doc "Writes `data` to the guest's standard input."
   @spec write_stdin(vm(), iodata()) :: :ok

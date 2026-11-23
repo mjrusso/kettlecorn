@@ -90,10 +90,23 @@ defmodule Kettlecorn.Protocol do
   defp decode_raw(<<@send_result, id::32, status>>), do: {:send_result, id, send_status(status)}
   defp decode_raw(_other), do: :unknown
 
+  # Every reply must encode within the input limit, including an error
+  # reply. The Rust client has the same bound.
+  defguardp is_reply_token(to) when is_binary(to) and byte_size(to) <= 256
+
   defp envelope(%{type: :vm_message, data: data}), do: {:message, data}
 
-  defp envelope(%{type: :host_call, reply_to: to, name: name, args: args}) when is_binary(to),
-    do: {:host_call, to, name, args}
+  defp envelope(%{type: :host_call, reply_to: to, name: name, args: args})
+       when is_reply_token(to) and is_binary(name) and is_map(args) do
+    if String.valid?(name), do: {:host_call, to, name, args}, else: {:rejected_host_call, to}
+  end
+
+  # A reply token with a malformed request: the host answers with an error.
+  defp envelope(%{type: :host_call, reply_to: to}) when is_reply_token(to),
+    do: {:rejected_host_call, to}
+
+  defp envelope(%{type: :host_call_cancel, reply_to: to}) when is_binary(to),
+    do: {:host_call_cancel, to}
 
   defp envelope(%{type: :kettlecorn, event: :boot_ready}), do: :boot_ready
   defp envelope(%{type: :kettlecorn, event: :boot_failed}), do: :boot_failed

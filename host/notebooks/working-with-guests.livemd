@@ -65,7 +65,8 @@ Calling an unregistered name returns an error:
 
 The guest sends messages to the host with `Kettlecorn.Host.send/1`. They
 arrive at the owner as `{:kettlecorn, vm, {:message, term}}`. The owner
-acknowledges each event after handling it to release its delivery budget.
+acknowledges each guest event after handling it to release its delivery budget.
+The final `{:stopped, stats}` event needs no acknowledgement.
 The host sends
 `{:wasm, payload}` to a guest process with `Kettlecorn.send/4`:
 
@@ -110,6 +111,11 @@ end
 
 {:ok, %{"value" => {:ok, 42}}} = Task.await(task)
 ```
+
+If the guest stops waiting for a call, the owner receives
+`{:host_call_cancel, reply_to}`. Stop any pending work for that token and
+acknowledge the event. [Use cases](use-cases.livemd#give-the-guest-controlled-access)
+shows how to have Kettlecorn manage calls with named handlers.
 
 ## Returned guest values
 

@@ -34,8 +34,11 @@ With `owner: pid` set when starting the VM, the owner receives:
 {:kettlecorn, vm, {:message, term}}
 ```
 
-The host decodes `term` as untrusted data through `Kettlecorn.ETF`. Delivery
-has a bounded outstanding budget with host acknowledgments; see
+The host decodes `term` as untrusted data through `Kettlecorn.ETF`.
+`Kettlecorn.ETF.to_json/1` accepts decoded values such as `term` or the
+`"value"` from an evaluation. It returns `{:ok, data}` with string keys,
+lists for tuples, and names for atoms, or `{:error, reason}`. Delivery has
+a bounded outstanding budget with host acknowledgments. See
 [output and messages](sandbox.md#output-and-messages).
 
 In the other direction, `Kettlecorn.send/4` delivers `{:wasm, payload}` to a
@@ -65,18 +68,57 @@ before sending.
 
 ### Elixir host
 
-The guest waits while the owner handles:
+Reply with `{:ok, value}` or `{:error, binary_reason}` in any of the three
+handler modes.
 
-```elixir
-{:kettlecorn, vm, {:host_call, reply_to, name, args}}
-```
+* `handlers: %{"name" => fun}` runs each call in its own process with the
+  argument map. The function returns the answer:
 
-The owner checks the name and arguments, then calls
-`Kettlecorn.reply(vm, reply_to, result)`. `result` must be `{:ok, value}` or
-`{:error, binary_reason}`. The guest receives that tuple unchanged.
-With no VM owner configured, the host replies `{:error, "no host handler"}`.
+  ```elixir
+  Kettlecorn.start_link(handlers: %{"double" => fn %{"n" => n} -> {:ok, 2 * n} end})
+  ```
 
-`Kettlecorn.reply/3` queues a reply without confirming delivery.
+  Other names get `{:error, "no host handler"}`, as when the VM has no
+  handlers or owner.
+* `handler: {module, arg}` starts a `Kettlecorn.HostHandler` process that
+  answers every call, one callback at a time, with state kept between
+  calls; the VM queues the other calls. It can answer later with
+  `Kettlecorn.HostHandler.reply/2`. A result other than `{:ok, value}` or
+  `{:error, binary_reason}` answers `{:error, "invalid host function result"}`,
+  as for functions, and a reply too large to send answers
+  `{:error, "host reply too large"}`.
+* Without either, the owner receives
+  `{:kettlecorn, vm, {:host_call, reply_to, name, args}}` and answers with
+  `Kettlecorn.reply(vm, reply_to, result)`. With no owner, the host replies
+  `{:error, "no host handler"}`.
+
+With `:handlers` or `:handler`, at most `:max_host_calls` calls (default 4)
+are running, queued, awaiting a reply, or cancelled with a
+`c:Kettlecorn.HostHandler.handle_cancel/2` callback still to run; further
+calls get `{:error, "host call capacity exhausted"}`. `Kettlecorn.reply/3`
+queues a reply without confirming delivery.
+
+### Cancellation and late replies
+
+The guest tells the host it has stopped waiting for a call when the call
+times out or the calling process exits first, for example an evaluation
+stopped by its timeout or reduction limit. An Elixir host then kills a
+function's process, drops a call still queued for the
+`Kettlecorn.HostHandler` process, calls
+`c:Kettlecorn.HostHandler.handle_cancel/2` once the call's callback has
+returned without a reply, or sends the owner
+`{:kettlecorn, vm, {:host_call_cancel, reply_to}}`. The guest drops a reply that arrives after the
+cancellation, whichever host sends it, so it never reaches the caller's
+mailbox. The exception is a call made while the guest's host-call process
+isn't running, before the guest's applications start (for example from an
+`@on_load` callback during preload) or while that process restarts: a late
+reply reaches its caller's mailbox as `{:wasm, {token, result}}`, and the
+call isn't cancelled if its caller exits. If that process stops while a
+call waits, the call is cancelled and returns `{:error, :interrupted}`; the
+host may already have handled it.
+
+A VM's `max_lifetime` keeps counting while the guest waits for a host call,
+so a slow host function uses up the VM's lifetime.
 
 ### Rust host
 
@@ -84,7 +126,7 @@ Register async functions with `VmOptions::register` before starting the VM.
 The function receives the argument map as a `Value` and returns
 `Result<Value, String>`. The guest receives `Ok(value)` as `{:ok, value}`
 or `Err(reason)` as `{:error, reason}`, with the reason encoded as a binary.
-An unregistered name returns `{:error, "unknown host function"}`.
+An unregistered name returns `{:error, "no host handler"}`.
 
 `VmOptions::host_call_timeout` sets the timeout for waiting on an async
 callback, independently of the guest's `:timeout`. It cannot interrupt
@@ -94,6 +136,7 @@ Use Tokio's blocking executor for blocking work. A callback timeout returns
 a binary error reason.
 Excess calls can time out if the client's rejection queue is full. See
 [guest callbacks](architecture.md#guest-callbacks) for capacity limits.
+When the guest cancels a call, the VM drops its future.
 
 ### Reply decoding
 
@@ -101,8 +144,8 @@ The guest decodes host payloads without creating atoms. A reply containing
 an atom absent from the guest is rejected and can cause the call to time
 out. Prefer strings for application-defined names and error reasons.
 
-Under `kettlecorn-run`, there is no host application to handle these events:
-`Kettlecorn.Host.send/1` is a no-op and host calls time out.
+Under `kettlecorn-run`, `Kettlecorn.Host.send/1` is a no-op and host calls
+wait until their timeout expires.
 
 ## Frame size checks
 

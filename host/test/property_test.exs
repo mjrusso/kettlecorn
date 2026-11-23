@@ -265,8 +265,29 @@ defmodule Kettlecorn.PropertyTest do
 
       assert decode.(%{type: :vm_message, data: data}) == {:message, data}
 
-      assert decode.(%{type: :host_call, reply_to: "to", name: "name", args: data}) ==
-               {:host_call, "to", "name", data}
+      assert decode.(%{type: :host_call, reply_to: "to", name: "name", args: %{"a" => data}}) ==
+               {:host_call, "to", "name", %{"a" => data}}
+
+      # Requests outside the callback contract get an error reply.
+      unless is_map(data) do
+        assert decode.(%{type: :host_call, reply_to: "to", name: "name", args: data}) ==
+                 {:rejected_host_call, "to"}
+      end
+
+      unless is_binary(data) do
+        assert decode.(%{type: :host_call, reply_to: "to", name: data, args: %{}}) ==
+                 {:rejected_host_call, "to"}
+      end
+
+      assert decode.(%{type: :host_call, reply_to: "to", name: <<0xFF>>, args: %{}}) ==
+               {:rejected_host_call, "to"}
+
+      # A token too long to answer is an error, with no reply.
+      long = :binary.copy("t", 257)
+      assert {:error, _} = decode.(%{type: :host_call, reply_to: long, name: "name", args: %{}})
+      assert {:error, _} = decode.(%{type: :host_call, reply_to: long})
+
+      assert decode.(%{type: :host_call_cancel, reply_to: "to"}) == {:host_call_cancel, "to"}
 
       event = %{type: :kettlecorn, event: :proxy_reply, id: 1, result: data}
       assert decode.(%{type: :vm_message, data: event}) == {:message, event}
@@ -338,7 +359,14 @@ defmodule Kettlecorn.PropertyTest do
               one_of([
                 binary(),
                 map(plain_term(), &:erlang.term_to_binary/1),
-                map(plain_term(), &:erlang.term_to_binary(%{type: :host_call, reply_to: &1}))
+                map(
+                  filter(plain_term(), &(not is_binary(&1))),
+                  &:erlang.term_to_binary(%{type: :host_call, reply_to: &1})
+                ),
+                map(
+                  filter(plain_term(), &(not is_binary(&1))),
+                  &:erlang.term_to_binary(%{type: :host_call_cancel, reply_to: &1})
+                )
               ])
           ) do
       assert {:error, _} = Protocol.decode(<<3, body::binary>>, 64 * 1024 * 1024)

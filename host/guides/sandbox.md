@@ -163,7 +163,8 @@ output; final diagnostics may be incomplete.
 If you set `owner: pid`, handle its guest output, messages and host calls,
 then call `Kettlecorn.acknowledge(vm)` for each handled event. The event shape
 is `{:kettlecorn, vm, event}`. Only that owner can acknowledge its events;
-`acknowledge(vm, count)` releases a batch in delivery order.
+`acknowledge(vm, count)` releases a batch in delivery order. The final
+`{:stopped, stats}` event needs no acknowledgement.
 
 Stopping a VM leaves already-delivered events in the owner's mailbox. The
 byte budget charges retained input and estimated heap space. Acknowledging
@@ -218,9 +219,10 @@ Without either grant, socket and DNS operations are denied and
 `Kettlecorn.HTTP` is unavailable. **The grants allow any reachable destination:**
 Kettlecorn has no destination allowlist, so a granted VM can reach internal
 services, `127.0.0.1`, and cloud metadata endpoints. Expose selected operations
-as host calls through `Kettlecorn.Host.call/3`. An Elixir host answers with
-`Kettlecorn.reply/3`; a Rust host uses functions registered with
-`VmOptions::register`. OS-level network confinement applies to the launcher
+as host calls through `Kettlecorn.Host.call/3`. An Elixir host answers them
+with `:handlers`, a `:handler` or its owner (see
+[host calls](guest-api.md#host-calls)); a Rust host uses functions
+registered with `VmOptions::register`. OS-level network confinement applies to the launcher
 for Elixir/CLI VMs and to the application process for embedded Rust VMs.
 
 See [HTTP and Req](running-applications.md#http-and-req) for how the grants

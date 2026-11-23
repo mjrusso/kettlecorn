@@ -29,6 +29,7 @@ defmodule Kettlecorn.VM do
   alias Kettlecorn.Options
   alias Kettlecorn.Protocol
   alias Kettlecorn.Sandbox.Instance
+  alias Kettlecorn.VM.HostCalls
   alias Kettlecorn.VM.Output
   alias Kettlecorn.VM.Requests
   alias Kettlecorn.VM.Termination
@@ -39,8 +40,11 @@ defmodule Kettlecorn.VM do
                       default: nil,
                       doc: """
                       PID that receives `{:kettlecorn, vm_pid, event}` for console output (`{:stdout,
-                      data}`, `{:stderr, data}`), messages (`{:message, term}`) and host calls
-                      (`{:host_call, reply_to, name, args}`), and, with preloading enabled, modules loaded on demand (`{:late_load, "Elixir.Mod"}`). Acknowledge events with
+                      data}`, `{:stderr, data}`), messages (`{:message, term}`), and, with
+                      preloading enabled, modules loaded on demand (`{:late_load, "Elixir.Mod"}`).
+                      Without `:handlers` or `:handler`, it also receives host calls
+                      (`{:host_call, reply_to, name, args}`), and `{:host_call_cancel, reply_to}`
+                      when the guest stops waiting for one. Acknowledge events with
                       `Kettlecorn.acknowledge/2` after handling them. When a started VM stops,
                       the owner receives `{:stopped, stats}` once, with the final
                       `Kettlecorn.stats/1` values and `rss: nil`, or `stats: nil` if the
@@ -92,6 +96,34 @@ defmodule Kettlecorn.VM do
                       doc:
                         "Estimated retained-byte budget for unacknowledged owner events. Use `Kettlecorn.acknowledge/2` after handling them."
                     ],
+                    handlers: [
+                      type: {:map, :string, {:fun, 1}},
+                      doc: """
+                      Functions that answer `Kettlecorn.Host.call/3`, by name. Each call runs in
+                      its own process, which the VM kills if the guest cancels the call. A
+                      function returns `{:ok, value}` or `{:error, binary_reason}`; one that
+                      raises or returns anything else answers `{:error, "host function failed"}`
+                      or `{:error, "invalid host function result"}`. Other names get
+                      `{:error, "no host handler"}`. Can't be combined with `:handler`.
+                      """
+                    ],
+                    handler: [
+                      type: {:tuple, [:atom, :any]},
+                      doc: """
+                      `{module, arg}`: a `Kettlecorn.HostHandler` that answers every
+                      `Kettlecorn.Host.call/3` in one process, one callback at a time; the VM
+                      queues the other calls. Can't be combined with `:handlers`.
+                      """
+                    ],
+                    max_host_calls: [
+                      type: :pos_integer,
+                      default: 4,
+                      doc: """
+                      With `:handlers` or `:handler`, limits calls running, queued, awaiting a
+                      reply or awaiting completion of cancellation. Further calls get
+                      `{:error, "host call capacity exhausted"}`.
+                      """
+                    ],
                     stop_with: [
                       type: :pid,
                       doc: """
@@ -108,7 +140,12 @@ defmodule Kettlecorn.VM do
   @doc false
   def split_options!(opts) do
     {vm_opts, sandbox_opts} = Keyword.split(opts, Keyword.keys(@options_schema.schema))
-    {Options.validate!(vm_opts, @options_schema), sandbox_opts}
+    vm_opts = Options.validate!(vm_opts, @options_schema)
+
+    if vm_opts[:handlers] && vm_opts[:handler],
+      do: raise(ArgumentError, ":handlers and :handler can't be combined")
+
+    {vm_opts, sandbox_opts}
   end
 
   defstruct [
@@ -120,6 +157,7 @@ defmodule Kettlecorn.VM do
     :stop_with,
     :events,
     :output_transport,
+    host_calls: %HostCalls{},
     exit_status: nil,
     termination: nil,
     failure: nil,
@@ -143,7 +181,8 @@ defmodule Kettlecorn.VM do
       e -> {:error, {:prepare_failed, Exception.message(e)}}
     else
       instance ->
-        with {:ok, state} <- start_port(instance, opts),
+        with {:ok, host_calls} <- start_host_calls(instance, opts),
+             {:ok, state} <- start_port(instance, opts, host_calls),
              {:ok, state} <- boot(state, Keyword.fetch!(opts, :boot_timeout)) do
           {:ok, state}
         else
@@ -155,13 +194,20 @@ defmodule Kettlecorn.VM do
     end
   end
 
-  defp start_port(instance, opts) do
-    launch_port(instance, opts, Output.prepare!())
+  defp start_host_calls(instance, opts) do
+    case HostCalls.start_handler(HostCalls.new(opts), opts[:handler]) do
+      {:ok, host_calls} -> {:ok, host_calls}
+      {:error, reason} -> {:error, {:host_handler, reason}, instance}
+    end
+  end
+
+  defp start_port(instance, opts, host_calls) do
+    launch_port(instance, opts, host_calls, Output.prepare!())
   rescue
     e -> {:error, {:start_failed, Exception.message(e)}, instance}
   end
 
-  defp launch_port(instance, opts, output) do
+  defp launch_port(instance, opts, host_calls, output) do
     [executable | args] = Instance.command(instance)
     args = ["--output-socket", Output.path(output) | args]
     stop_with = opts[:stop_with]
@@ -187,6 +233,7 @@ defmodule Kettlecorn.VM do
       port: port,
       output_transport: output,
       owner: Keyword.get(opts, :owner),
+      host_calls: host_calls,
       instance: instance,
       stop_with: stop_with,
       events: Events.new(opts[:max_pending_events], opts[:max_pending_event_bytes]),
@@ -236,29 +283,35 @@ defmodule Kettlecorn.VM do
         {:tcp_closed, socket} = message when socket == state.output_transport.socket ->
           boot_message(message, state, deadline)
 
-        {:DOWN, _ref, :process, pid, _reason} = message when pid == state.stop_with ->
+        # stop_with, or a host function's task.
+        {:DOWN, _ref, :process, _pid, _reason} = message ->
           boot_message(message, state, deadline)
 
-        :max_lifetime ->
-          boot_message(:max_lifetime, state, deadline)
+        message when message in [:max_lifetime, :flush_input] ->
+          boot_message(message, state, deadline)
 
-        {:EXIT, port, _reason} when port == state.port ->
-          await_boot(state, deadline)
+        # Applications can make host calls while they start.
+        {:"$gen_cast", {:host_calls, _message} = request} ->
+          boot_result(handle_cast(request, state), deadline)
 
-        {:EXIT, pid, reason} when is_pid(pid) ->
-          {:stop, reason, state}
+        {:"$gen_cast", {:host_reply, _reply_to, _prepared} = request} ->
+          boot_result(handle_cast(request, state), deadline)
+
+        {:EXIT, pid, reason} = message ->
+          if Process.info(self(), :parent) == {:parent, pid},
+            do: {:stop, reason, state},
+            else: boot_message(message, state, deadline)
       after
         remaining -> {:stop, {:vm_down, :boot_timeout}, state}
       end
     end
   end
 
-  defp boot_message(message, state, deadline) do
-    case handle_info(message, state) do
-      {:noreply, state} -> await_boot(state, deadline)
-      {:stop, _reason, _state} = stopped -> stopped
-    end
-  end
+  defp boot_message(message, state, deadline),
+    do: boot_result(handle_info(message, state), deadline)
+
+  defp boot_result({:noreply, state}, deadline), do: await_boot(state, deadline)
+  defp boot_result({:stop, _reason, _state} = stopped, _deadline), do: stopped
 
   defp startup_reason({:shutdown, reason}), do: reason
   defp startup_reason(reason), do: reason
@@ -297,6 +350,18 @@ defmodule Kettlecorn.VM do
   def handle_cast({:send, prepared}, state) do
     {id, state} = next_id(state)
     continue(command(state, Protocol.send_frame(id, prepared)))
+  end
+
+  # From Kettlecorn.reply/3. With handlers, calls are answered by id.
+  def handle_cast({:host_reply, _reply_to, prepared}, state) do
+    if HostCalls.owner?(state.host_calls),
+      do: continue(send_replies(state, [prepared])),
+      else: {:noreply, state}
+  end
+
+  def handle_cast({:host_calls, message}, state) do
+    {replies, host_calls} = HostCalls.handle(state.host_calls, self(), message)
+    continue(send_replies(%{state | host_calls: host_calls}, replies))
   end
 
   def handle_cast({:acknowledge, owner, count}, %{owner: owner} = state) do
@@ -357,10 +422,21 @@ defmodule Kettlecorn.VM do
   def handle_info({:DOWN, _ref, :process, pid, _reason}, %{stop_with: pid} = state),
     do: {:stop, :normal, state}
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state),
-    do: {:noreply, %{state | requests: Requests.caller_down(state.requests, ref)}}
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case HostCalls.down(state.host_calls, ref, reason) do
+      {replies, host_calls} ->
+        continue(send_replies(%{state | host_calls: host_calls}, replies))
 
-  def handle_info({:EXIT, _port, _reason}, state), do: {:noreply, state}
+      :error ->
+        {:noreply, %{state | requests: Requests.caller_down(state.requests, ref)}}
+    end
+  end
+
+  def handle_info({:EXIT, pid, reason}, %{host_calls: %{handler: pid}} = state),
+    do: down(state, {:host_handler, reason})
+
+  # The port, and host function tasks, which are also monitored.
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   defp demand_output(%{failure: nil} = state) do
     case Output.next(state.output_transport) do
@@ -395,6 +471,7 @@ defmodule Kettlecorn.VM do
   defp cleanup(%__MODULE__{} = state), do: cleanup(state, false)
 
   defp cleanup(state, report_stopped?) do
+    HostCalls.stop(state.host_calls)
     Output.cleanup(state.output_transport)
 
     {confirmed, termination} = stop_launcher(state)
@@ -444,9 +521,26 @@ defmodule Kettlecorn.VM do
   defp handle_frame({:message, data}, state, size), do: notify(state, {:message, data}, size)
 
   defp handle_frame({:host_call, reply_to, name, args}, state, size) do
-    if state.owner,
-      do: notify(state, {:host_call, reply_to, name, args}, size),
-      else: reply_to_guest(state, reply_to, {:error, "no host handler"})
+    cond do
+      not HostCalls.owner?(state.host_calls) ->
+        {replies, host_calls} = HostCalls.call(state.host_calls, self(), reply_to, name, args)
+        send_replies(%{state | host_calls: host_calls}, replies)
+
+      state.owner ->
+        notify(state, {:host_call, reply_to, name, args}, size)
+
+      true ->
+        send_replies(state, [HostCalls.prepare(reply_to, {:error, "no host handler"}, nil)])
+    end
+  end
+
+  defp handle_frame({:rejected_host_call, reply_to}, state, _size),
+    do: send_replies(state, HostCalls.reject(state.host_calls, reply_to))
+
+  defp handle_frame({:host_call_cancel, reply_to}, state, size) do
+    if HostCalls.owner?(state.host_calls),
+      do: notify(state, {:host_call_cancel, reply_to}, size),
+      else: %{state | host_calls: HostCalls.cancel(state.host_calls, self(), reply_to)}
   end
 
   defp handle_frame({:late_load, module}, state, size) do
@@ -482,9 +576,11 @@ defmodule Kettlecorn.VM do
   defp handle_frame(event, state, _size) when event in [:boot_ready, :boot_failed, :unknown],
     do: state
 
-  defp reply_to_guest(state, reply_to, result) do
-    {id, state} = next_id(state)
-    command(state, Protocol.send_frame(id, Protocol.prepare_reply(reply_to, result)))
+  defp send_replies(state, replies) do
+    Enum.reduce(replies, state, fn prepared, state ->
+      {id, state} = next_id(state)
+      command(state, Protocol.send_frame(id, prepared))
+    end)
   end
 
   defp command(state, body), do: write_frame(state, Protocol.frame(body))

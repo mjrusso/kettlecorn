@@ -62,56 +62,33 @@ to accept code. Assign each VM to one run and stop it afterward.
 
 ## Give the guest controlled access
 
-By default, sandboxed code has no network or access to host files. Expose
-the operations it needs as host calls. Here the guest can look
-up products in a host-side inventory. Other host calls are rejected. This VM
-has a ten-minute lifetime; restart its setup cell if it expires:
+Register a host call that looks up products in an inventory owned by the
+host. This VM has a ten-minute lifetime. Rerun the setup cell if it expires.
 
 ```elixir
 inventory = %{"apple" => %{price: 0.5, stock: 12}, "pear" => %{price: 0.75, stock: 0}}
 
+lookup = fn
+  %{"sku" => sku} when is_binary(sku) ->
+    case Map.fetch(inventory, sku) do
+      {:ok, item} -> {:ok, item}
+      :error -> {:error, "unknown sku"}
+    end
+
+  _args ->
+    {:error, "expected a SKU"}
+end
+
 {:ok, shop} =
   Kettlecorn.start_link(
-    owner: self(),
+    handlers: %{"lookup" => lookup},
     max_memory: 128 * 1024 * 1024,
     max_fuel: 100_000_000_000,
     max_lifetime: 600_000
   )
 ```
 
-The owner handles requests while the evaluation waits. Validate the operation
-and its arguments before looking up inventory:
-
-```elixir
-answer_host_calls = fn answer_host_calls, task ->
-  receive do
-    {:kettlecorn, ^shop, {:host_call, reply_to, "lookup", %{"sku" => sku}}} when is_binary(sku) ->
-      reply =
-        case Map.fetch(inventory, sku) do
-          {:ok, item} -> {:ok, item}
-          :error -> {:error, "unknown sku"}
-        end
-
-      Kettlecorn.reply(shop, reply_to, reply)
-
-      Kettlecorn.acknowledge(shop)
-      answer_host_calls.(answer_host_calls, task)
-
-    {:kettlecorn, ^shop, {:host_call, reply_to, _name, _args}} ->
-      Kettlecorn.reply(shop, reply_to, {:error, "not allowed"})
-      Kettlecorn.acknowledge(shop)
-      answer_host_calls.(answer_host_calls, task)
-
-    {ref, result} when ref == task.ref ->
-      Process.demonitor(ref, [:flush])
-      result
-  after
-    10_000 -> raise "guest did not finish the inventory lookup"
-  end
-end
-```
-
-The guest asks for three products and then an operation the host rejects:
+The guest requests three SKUs, then calls an unregistered operation.
 
 ```elixir
 code = ~S"""
@@ -127,28 +104,22 @@ end
 """
 ```
 
-Run the evaluation in a task so the owner can answer its host calls. Check
-both successful lookups and rejected operations:
-
 ```elixir
-task = Task.async(fn -> Kettlecorn.eval(shop, code) end)
-
 {:ok,
  %{
    "value" => {
      [{"apple", 0.5}, {"pear", :out_of_stock}, {"plum", "unknown sku"}],
-     {:error, "not allowed"}
+     {:error, "no host handler"}
    }
- }} = answer_host_calls.(answer_host_calls, task)
+ }} = Kettlecorn.eval(shop, code)
 ```
 
 ```elixir
 Kettlecorn.stop(shop)
 ```
 
-The host must check the call name and arguments before performing an
-operation. An unanswered host call times out in the guest after 5 seconds
-(`Kettlecorn.Host.call/3`'s `:timeout`).
+The guest waits up to five seconds by default. If the call times out,
+Kettlecorn cancels the handler's process.
 
 ## Host third-party plugins
 

@@ -173,6 +173,39 @@ cannot be decoded, the client can send an error when it has a valid reply
 token and room in the rejection queue. If the queue is full, the guest call
 can time out.
 
+`Kettlecorn.Host.call/3` registers each call with the guest's
+`Kettlecorn.HostCalls` process under a process alias of the caller. The
+reply token holds both, so host replies reach that process first, and it
+passes each one to the call's alias. When the call times out, the caller
+retires the alias, which drops any later reply, sends a
+`host_call_cancel` envelope with the call's reply token, and tells
+`Kettlecorn.HostCalls`, without waiting, to forget the call.
+`Kettlecorn.HostCalls` sends the envelope when the caller exits first. The
+caller monitors `Kettlecorn.HostCalls`: if it stops, the reply can't
+arrive, so the caller cancels the call and returns `{:error, :interrupted}`
+without sending it again. While that process isn't running, before the
+guest's applications start (as when preload runs an `@on_load` callback) or
+while it restarts, the reply token names the caller, and replies go to it
+directly. The process runs
+outside evaluations, so a reduction budget that stops the caller doesn't
+stop it. The Rust client aborts the callback with that token, which releases
+its slot, and sends a callback's result only while that callback's task is
+the token's entry. Both clients drop a call whose token matches a call in
+progress.
+
+The Elixir VM assigns an ID to each handled call. A reply must match a
+live ID, even if the guest reuses the original token. Function handlers run
+in linked, monitored tasks. A task that exits without a result yields
+`{:error, "host function failed"}`. A stateful handler acknowledges each
+callback before the VM sends it more work. Replies are encoded in the
+process that produces them.
+
+On cancellation, the VM kills the function task or drops the queued
+call. For a stateful callback that returns without replying, the VM
+calls `handle_cancel/2` and holds the capacity slot until it returns.
+With manual delivery, the VM forwards the notice to the owner. These
+rules apply during boot as well.
+
 The [device monitor](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#device-monitor)
 uses named calls to dispatch events to Elixir plugins with an async Rust
 callback for alerts.
