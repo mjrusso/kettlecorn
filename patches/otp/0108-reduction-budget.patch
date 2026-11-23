@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kettlecorn <kettlecorn@localhost>
+Date: Sun, 22 Nov 2026 12:00:00 -0500
+Subject: [PATCH] Reduction budgets: scheduler hooks for per-evaluation limits
+
+
+diff --git a/erts/emulator/beam/erl_process.c b/erts/emulator/beam/erl_process.c
+index f8b30f7..5ba5024 100644
+--- a/erts/emulator/beam/erl_process.c
++++ b/erts/emulator/beam/erl_process.c
+@@ -9706,6 +9706,9 @@ Process *erts_schedule(ErtsSchedulerData *esdp, Process *p, int calls)
+ 	rq = erts_get_runq_current(esdp);
+ 
+ 	p->reds += actual_reds;
++#ifdef __wasi__
++	kettlecorn_budget_charge(p, actual_reds);
++#endif
+ 
+ 	state = erts_atomic32_read_nob(&p->state);
+ 
+@@ -10446,6 +10449,9 @@ execute_process:
+             ASSERT(actual_reds >= 0);
+             esdp->virtual_reds = 0;
+             p->reds += actual_reds;
++#ifdef __wasi__
++            kettlecorn_budget_charge(p, actual_reds);
++#endif
+             ERTS_PROC_REDUCTIONS_EXECUTED(esdp, rq,
+                                           (int) ERTS_PSFLGS_GET_USR_PRIO(state),
+                                           reds,
+@@ -12154,6 +12160,10 @@ erts_free_proc(Process *p)
+     ASSERT(0 == erts_proc_read_refc(p));
+     if (p->flags & F_DELAYED_DEL_PROC)
+ 	delete_process(p);
++#ifdef __wasi__
++    /* After the last schedule-out, which charges the exiting process. */
++    kettlecorn_budget_release(p->kettlecorn_budget);
++#endif
+     erts_free(ERTS_ALC_T_PROC, (void *) p);
+ }
+ 
+@@ -12651,6 +12661,9 @@ erl_create_process(Process* parent, /* Parent of process (default group leader).
+     p->freason = EXC_NULL;
+     p->ftrace = NIL;
+     p->reds = 0;
++#ifdef __wasi__
++    p->kettlecorn_budget = kettlecorn_budget_inherit(parent);
++#endif
+ 
+     ERTS_PTMR_INIT(p);
+ 
+@@ -13225,6 +13238,9 @@ void erts_init_empty_process(Process *p)
+     p->rcount = 0;
+     p->common.id = ERTS_INVALID_PID;
+     p->reds = 0;
++#ifdef __wasi__
++    p->kettlecorn_budget = NULL;
++#endif
+     p->common.tracee.first_ref = NULL;
+     p->common.tracee.all_trace_flags = F_INITIAL_TRACE_FLAGS;
+     p->group_leader = ERTS_INVALID_PID;
+diff --git a/erts/emulator/beam/erl_process.h b/erts/emulator/beam/erl_process.h
+index 185922e..f0b865c 100644
+--- a/erts/emulator/beam/erl_process.h
++++ b/erts/emulator/beam/erl_process.h
+@@ -1202,6 +1202,10 @@ struct process {
+     Uint debug_reds_in;
+ #endif
+ 
++#ifdef __wasi__
++    /* Kettlecorn: the reduction budget this process is charged to, or NULL. */
++    void *kettlecorn_budget;
++#endif
+ };
+ 
+ extern Eterm erts_init_process_id; /* pid of init process */

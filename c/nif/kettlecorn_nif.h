@@ -27,6 +27,11 @@ ERL_NIF_TERM kettlecorn_http_send_nif(ErlNifEnv *env, int argc, const ERL_NIF_TE
 ERL_NIF_TERM kettlecorn_http_read_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
 ERL_NIF_TERM kettlecorn_http_close_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
 
+int kettlecorn_budget_nif_load(ErlNifEnv *env, ErlNifResourceFlags flags);
+ERL_NIF_TERM kettlecorn_budget_new_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM kettlecorn_budget_attach_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_TERM kettlecorn_budget_close_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
+
 #endif
 
 #endif

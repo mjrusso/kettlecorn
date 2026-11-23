@@ -16,6 +16,7 @@ introduced by another feature patch.
 | [`0104-sockets-dns`](otp/0104-sockets-dns.patch) | Restores inet sockets and sets the guest hostname to `localhost` without opening a UDP socket at boot. |
 | [`0106-terminal`](otp/0106-terminal.patch) | Enables `prim_tty` raw mode without terminfo for IEx line editing, history, and completion. |
 | [`0107-late-load`](otp/0107-late-load.patch) | Reports successful on-demand module loads and lets the CLI flush reports before exit. |
+| [`0108-reduction-budget`](otp/0108-reduction-budget.patch) | Gives each process a reduction budget pointer, inherited at spawn and released when the process is freed, and charges it wherever the scheduler adds to the process's reduction count. The budgets live in `c/nif/kettlecorn_budget.c`. |
 
 ## OTP integration
 

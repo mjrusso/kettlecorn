@@ -37,6 +37,9 @@ static ErlNifFunc nif_funcs[] = {
   {"http_send", 8, kettlecorn_http_send_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"http_read", 2, kettlecorn_http_read_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"http_close", 1, kettlecorn_http_close_nif, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"reduction_budget", 1, kettlecorn_budget_new_nif, 0},
+  {"attach_reduction_budget", 1, kettlecorn_budget_attach_nif, 0},
+  {"close_reduction_budget", 1, kettlecorn_budget_close_nif, 0},
 #endif
 };
 
@@ -45,6 +48,7 @@ static int load(ErlNifEnv *env, void **priv_data, ERL_NIF_TERM load_info) {
   (void)priv_data;
   (void)load_info;
   if (!kettlecorn_http_nif_load(env, ERL_NIF_RT_CREATE)) return -1;
+  if (!kettlecorn_budget_nif_load(env, ERL_NIF_RT_CREATE)) return -1;
   kettlecorn_bridge_start();
   return 0;
 }
@@ -54,7 +58,10 @@ static int upgrade(ErlNifEnv *env, void **priv_data, void **old_priv_data,
   (void)priv_data;
   (void)old_priv_data;
   (void)load_info;
-  return kettlecorn_http_nif_load(env, ERL_NIF_RT_TAKEOVER) ? 0 : -1;
+  return kettlecorn_http_nif_load(env, ERL_NIF_RT_TAKEOVER) &&
+                 kettlecorn_budget_nif_load(env, ERL_NIF_RT_TAKEOVER)
+             ? 0
+             : -1;
 }
 
 ERL_NIF_INIT(wasm, nif_funcs, load, NULL, upgrade, NULL)

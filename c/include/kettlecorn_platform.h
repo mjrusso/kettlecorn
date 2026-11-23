@@ -9,6 +9,12 @@
 void kettlecorn_scheduler_yield(void);
 void kettlecorn_scheduler_wait(void);
 _Noreturn void kettlecorn_wait_for_halt(const volatile int *exit_code);
+
+/* Reduction budgets (c/nif/kettlecorn_budget.c), called from erl_process.c. */
+struct process;
+void *kettlecorn_budget_inherit(struct process *parent);
+void kettlecorn_budget_charge(struct process *p, long reds);
+void kettlecorn_budget_release(void *budget);
 #endif
 
 #endif

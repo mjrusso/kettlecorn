@@ -299,7 +299,7 @@ cancellation checks.
 
 Kettlecorn's patches follow Popcorn's stack, with one patch per theme:
 the WASI platform layer, cooperative threads, the stdio bridge, sockets
-and DNS, the terminal, and late-load reporting. See the
+and DNS, the terminal, late-load reporting, and reduction budgets. See the
 [patch list](https://github.com/mjrusso/kettlecorn/blob/main/patches/README.md).
 The platform patch includes `c/include/kettlecorn_platform.h` through OTP's
 `sys.h`. It defines `KETTLECORN_WASM` for the shared browser/WASI restrictions.
@@ -343,6 +343,20 @@ and emulator flags. The feature patches add these integration points:
   `{kettlecorn_late_load_barrier, Ref}` request sends the pid a barrier
   message after the reports before it. `Kettlecorn.Preload` stores the pid
   after preloading (see [preloading modules](sandbox.md#preloading-modules)).
+* `erl_process.h` gives each process a pointer to a reduction budget in
+  `c/nif/kettlecorn_budget.c`. `erl_process.c` copies the parent's pointer
+  when it creates a process, releases it in `erts_free_proc`, and charges
+  the budget wherever it adds to `p->reds`: when a process is scheduled out,
+  including when it exits, and after signal handling at schedule-in. Past
+  the limit, the charge sends `kill` exit signals to the charged process and
+  to the first process that attached the budget, and every later charge
+  kills the charged process. `wasm:reduction_budget/1`,
+  `attach_reduction_budget/1` and `close_reduction_budget/1` create, attach
+  and close budgets; a process already charged to a budget can't attach
+  another. The evaluator attaches one to each evaluation process and to the
+  workers that run its output callbacks, and closes it before replying. If
+  the budget wasn't exceeded, processes that keep running afterwards are no
+  longer charged.
 
 The native bootstrap embeds the copied `wasm` and patched preloaded modules
 (`erl_init`, `prim_inet`); it only calls `wasm:on_load/0` from `wasm`. Its

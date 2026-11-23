@@ -27,9 +27,11 @@
 -export([getaddrinfo/2, http_available/0, http_send/8, http_read/2, http_close/1]).
 -export([on_load/0, send/1, host_call/3]).
 -export([send_raw/1, send_envelope/1]).
+-export([reduction_budget/1, attach_reduction_budget/1, close_reduction_budget/1]).
 
 -nifs([send_raw/1, getaddrinfo/2,
-        http_available/0, http_send/8, http_read/2, http_close/1]).
+        http_available/0, http_send/8, http_read/2, http_close/1,
+        reduction_budget/1, attach_reduction_budget/1, close_reduction_budget/1]).
 
 -define(HOST_CALL_TIMEOUT, 5000).
 
@@ -155,4 +157,25 @@ http_read(_Ref, _Max) ->
 
 -spec http_close(reference()) -> ok | {error, atom()}.
 http_close(_Ref) ->
+    erlang:nif_error(undef).
+
+%% WASI only: a reduction budget shared by the processes charged to it.
+%% Past Limit, the scheduler kills the first process that attached it, and
+%% each charged process when it next accounts its reductions, even after
+%% the budget is closed.
+-spec reduction_budget(pos_integer() | infinity) -> reference().
+reduction_budget(_Limit) ->
+    erlang:nif_error(undef).
+
+%% Charges the caller and the processes it spawns afterwards. Fails if the
+%% caller is already charged to a budget.
+-spec attach_reduction_budget(reference()) -> ok | {error, attached}.
+attach_reduction_budget(_Budget) ->
+    erlang:nif_error(undef).
+
+%% Stops counting and returns the reductions used and whether they
+%% exceeded the limit. If they didn't, the processes still charged to the
+%% budget are no longer limited.
+-spec close_reduction_budget(reference()) -> {non_neg_integer(), boolean()}.
+close_reduction_budget(_Budget) ->
     erlang:nif_error(undef).
