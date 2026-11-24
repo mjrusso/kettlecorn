@@ -2,8 +2,9 @@ mod fd;
 mod terminal;
 
 use crate::engine::{
-    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, Mode, Preload, RootOptions,
-    Runtime, Usage, WASMTIME_VERSION, streams::Streams,
+    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, HttpAccess, Mode,
+    NetworkAccess, NetworkRules, Preload, RootOptions, Runtime, Usage, WASMTIME_VERSION,
+    streams::Streams,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -73,12 +74,22 @@ struct Args {
     /// and output draining
     #[arg(long, conflicts_with = "lifetime_ms", value_parser = humantime::parse_duration)]
     timeout: Option<Duration>,
-    /// Allow TCP/UDP sockets and DNS to any reachable destination
-    #[arg(long)]
+    /// Allow TCP/UDP sockets and DNS to any reachable destination, including loopback, internal,
+    /// and metadata addresses (`--network-allow public` allows public addresses only)
+    #[arg(long, conflicts_with = "network_allow")]
     network: bool,
+    /// Allow sockets and DNS only for this destination (repeatable): a host name,
+    /// `*.domain`, an address or CIDR range (IPv6 in brackets), or `public`, with
+    /// an optional `:port`
+    #[arg(long, value_name = "RULE")]
+    network_allow: Vec<crate::NetworkRule>,
     /// Allow outgoing HTTP to any reachable destination using compiled Mozilla roots
-    #[arg(long)]
+    #[arg(long, conflicts_with = "http_allow")]
     http: bool,
+    /// Allow outgoing HTTP only to this destination (repeatable): a host name,
+    /// `*.domain`, or an address or CIDR range, with an optional `:port`
+    #[arg(long, value_name = "RULE")]
+    http_allow: Vec<crate::NetworkRule>,
     /// Start an interactive guest IEx session
     #[arg(long)]
     iex: bool,
@@ -199,6 +210,14 @@ fn watch_port(cancel: Cancellation) -> Watcher {
     Watcher(finished)
 }
 
+fn access(any: bool, rules: Vec<crate::NetworkRule>) -> NetworkAccess {
+    match (any, NetworkRules::new(rules)) {
+        (true, _) => NetworkAccess::Any,
+        (false, None) => NetworkAccess::Denied,
+        (false, Some(rules)) => NetworkAccess::Only(rules),
+    }
+}
+
 async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
     let runtime = Runtime::load(&args.runtime)?;
     let mut options = GuestOptions::new(&args.root);
@@ -217,8 +236,8 @@ async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
     options.max_lifetime = args
         .timeout
         .or_else(|| args.lifetime_ms.map(Duration::from_millis));
-    options.network = args.network;
-    options.http = args.http;
+    options.network = access(args.network, args.network_allow);
+    options.http = HttpAccess::try_from(access(args.http, args.http_allow))?;
     options.schedulers = args.schedulers;
     options.env = args.env.into_iter().collect::<BTreeMap<_, _>>();
     options.apps = args.apps;
@@ -243,11 +262,11 @@ async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
             .insert("KETTLECORN_TTY_SIZE".into(), terminal.guest_path.clone());
     }
     if args.print_wasmtime_command {
+        let command = runtime.wasmtime_command(&options)?;
         println!("# Wasmtime {WASMTIME_VERSION}; root must be a private writable copy");
         println!(
             "{}",
-            runtime
-                .wasmtime_command(&options)
+            command
                 .iter()
                 .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
                 .collect::<Vec<_>>()

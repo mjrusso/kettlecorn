@@ -5,7 +5,7 @@ use crate::engine::{
     streams::Streams,
 };
 use crate::protocol::{self, Value};
-use crate::{Error, Preload, Runtime};
+use crate::{Error, NetworkAccess, Preload, Runtime};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -42,11 +42,15 @@ pub struct VmOptions {
     pub max_fuel: Option<u64>,
     /// Guest lifetime, starting after preparation and private-root copying. Defaults to no limit.
     pub max_lifetime: Option<Duration>,
-    /// Grants socket and DNS access to any reachable destination. Defaults to false.
-    /// Host CA certificates are not copied into the guest.
-    pub network: bool,
-    /// Grants outgoing HTTP through WASI. Defaults to false; requires the `http` Cargo feature.
-    pub http: bool,
+    /// Socket and DNS access: [`NetworkAccess::Any`] reaches any destination, including
+    /// loopback, private, and cloud metadata addresses, and [`NetworkAccess::Only`] the
+    /// destinations its [`NetworkRule`](crate::NetworkRule)s allow. A `public` rule allows
+    /// public addresses only.
+    /// Defaults to [`NetworkAccess::Denied`]. Host CA certificates are not copied into the guest.
+    pub network: NetworkAccess,
+    /// Outgoing HTTP through WASI, with the same choices as `network`; `public` rules are not
+    /// supported. Defaults to [`NetworkAccess::Denied`]; requires the `http` Cargo feature.
+    pub http: NetworkAccess,
     /// Cooked Mix bundle copied into the guest at `/app`. Defaults to none.
     pub app_dir: Option<PathBuf>,
     /// Timeout for waiting on an async Rust callback. Defaults to five seconds.
@@ -94,8 +98,8 @@ impl Default for VmOptions {
             max_memory: Some(512 * 1024 * 1024),
             max_fuel: None,
             max_lifetime: None,
-            network: false,
-            http: false,
+            network: NetworkAccess::Denied,
+            http: NetworkAccess::Denied,
             app_dir: None,
             host_call_timeout: DEFAULT_TIMEOUT,
             frame_write_timeout: Duration::from_secs(5),
@@ -254,7 +258,9 @@ impl Runtime {
     /// Dropping the future can leave preparation running to completion.
     pub async fn warm_up(&self, options: &VmOptions) -> Result<(), Error> {
         let runtime = self.clone();
-        let http = options.http;
+        let http = crate::engine::HttpAccess::try_from(options.http.clone())
+            .map_err(Error::InvalidOptions)?
+            .granted();
         let fuel = options.max_fuel.is_some();
         tokio::task::spawn_blocking(move || {
             runtime
@@ -271,7 +277,7 @@ impl Runtime {
     /// Call on a Tokio runtime with I/O and time enabled.
     /// Execution runs as a Tokio task without a dedicated OS thread. Dropping the
     /// returned [`Vm`] cancels it; [`Vm::shutdown`] also waits for cleanup.
-    pub async fn start(&self, options: VmOptions) -> Result<Vm, Error> {
+    pub async fn start(&self, mut options: VmOptions) -> Result<Vm, Error> {
         if options.frame_write_timeout.is_zero() {
             return Err(Error::InvalidOptions(anyhow!(
                 "frame_write_timeout must be positive"
@@ -291,19 +297,21 @@ impl Runtime {
                 "max_pending_requests exceeds {max_requests}"
             )));
         }
+        let http = crate::engine::HttpAccess::try_from(std::mem::take(&mut options.http))
+            .map_err(Error::InvalidOptions)?;
         if options.max_host_calls.get() > Semaphore::MAX_PERMITS {
             return Err(Error::InvalidOptions(anyhow!(
                 "max_host_calls exceeds {}",
                 Semaphore::MAX_PERMITS
             )));
         }
-        tokio::time::timeout(options.boot_timeout, self.start_vm(options))
+        tokio::time::timeout(options.boot_timeout, self.start_vm(options, http))
             .await
             .map_err(|_| Error::BootDeadline)?
             .map_err(Error::Boot)
     }
 
-    async fn start_vm(&self, options: VmOptions) -> Result<Vm> {
+    async fn start_vm(&self, options: VmOptions, http: crate::engine::HttpAccess) -> Result<Vm> {
         let runtime = self.clone();
         let usage = Arc::<Usage>::default();
         let metered = options.max_fuel.is_some();
@@ -315,7 +323,7 @@ impl Runtime {
                 max_fuel: options.max_fuel,
                 max_lifetime: options.max_lifetime,
                 network: options.network,
-                http: options.http,
+                http,
                 env: [(
                     "KETTLECORN_MAX_GUEST_FRAME_BYTES".into(),
                     protocol::MAX_FRAME_BYTES.to_string(),

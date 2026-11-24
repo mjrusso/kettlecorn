@@ -1,4 +1,7 @@
-use super::{CompilationCache, Preparation, RootOptions, Usage, WASMTIME_VERSION, root};
+use super::{
+    CompilationCache, HttpAccess, NetworkAccess, Preparation, RootOptions, Usage, WASMTIME_VERSION,
+    root,
+};
 use crate::Error;
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -43,8 +46,8 @@ pub(crate) struct GuestOptions {
     pub max_memory: Option<usize>,
     pub max_fuel: Option<u64>,
     pub max_lifetime: Option<Duration>,
-    pub network: bool,
-    pub http: bool,
+    pub network: NetworkAccess,
+    pub http: HttpAccess,
     pub schedulers: usize,
     pub env: BTreeMap<String, String>,
     pub apps: Vec<String>,
@@ -69,8 +72,8 @@ impl GuestOptions {
             max_memory: None,
             max_fuel: None,
             max_lifetime: None,
-            network: false,
-            http: false,
+            network: NetworkAccess::Denied,
+            http: HttpAccess::default(),
             schedulers: 1,
             env: BTreeMap::new(),
             apps: Vec::new(),
@@ -247,7 +250,9 @@ impl Runtime {
 
     pub(crate) fn arguments(&self, options: &GuestOptions) -> Vec<String> {
         let mut args = vec![
-            self.component(options.http).to_string_lossy().into_owned(),
+            self.component(options.http.granted())
+                .to_string_lossy()
+                .into_owned(),
             "-S".into(),
             format!("{0}:{0}", options.schedulers),
         ];
@@ -260,7 +265,7 @@ impl Runtime {
         }
         args.push("-kettlecorn_apps".into());
         args.extend(options.apps.clone());
-        if options.network {
+        if options.network.granted() {
             args.push("-kettlecorn_network".into());
         }
         match options.preload {
@@ -308,7 +313,11 @@ impl Runtime {
 
     /// Arguments for optional manual debugging with the matching Wasmtime CLI.
     #[cfg(feature = "cli")]
-    pub(crate) fn wasmtime_command(&self, options: &GuestOptions) -> Vec<String> {
+    pub(crate) fn wasmtime_command(&self, options: &GuestOptions) -> anyhow::Result<Vec<String>> {
+        anyhow::ensure!(
+            options.network.rules().is_none() && options.http.rules().is_none(),
+            "the Wasmtime command can't express network allowlists"
+        );
         let mut args = vec![
             "wasmtime".into(),
             "run".into(),
@@ -326,12 +335,12 @@ impl Runtime {
         if let Some(timeout) = options.max_lifetime {
             args.extend(["-W".into(), format!("timeout={}ms", timeout.as_millis())]);
         }
-        if options.network {
+        if options.network.granted() {
             args.extend(
                 ["-S", "inherit-network=y", "-S", "allow-ip-name-lookup=y"].map(str::to_owned),
             );
         }
-        if options.http {
+        if options.http.granted() {
             args.extend(["-S", "http=y"].map(str::to_owned));
         }
         args.extend(["--dir".into(), format!("{}::/", options.root.display())]);
@@ -339,7 +348,7 @@ impl Runtime {
             args.extend(["--env".into(), format!("{name}={value}")]);
         }
         args.extend(self.arguments(options));
-        args
+        Ok(args)
     }
 }
 

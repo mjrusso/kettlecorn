@@ -3,8 +3,8 @@
 ## Unreleased
 
 * **Breaking:** install a runtime that supports protocol version 2.
-* **Breaking:** `Vm::shutdown` returns a `Shutdown` with the final resource
-  stats and a `result`. Replace `vm.shutdown().await?` with
+* **Breaking:** `Vm::shutdown` returns a `Shutdown` containing the final
+  stats and the result. Replace `vm.shutdown().await?` with
   `vm.shutdown().await.result?`.
 * Add `Vm::stats`, which reports fuel consumed (when `max_fuel` is set) and
   linear memory.
@@ -26,6 +26,11 @@
 * Add `Runtime::install_from_archive`, which installs a release archive
   already on disk into the cache, verified against the same checksum as a
   download, for hosts without network access.
+* **Breaking:** `VmOptions::network` and `VmOptions::http` are a
+  `NetworkAccess` instead of a `bool`: `Denied`, `Any`, or
+  `Only(NetworkRules)`, which limits the grant to the listed host names,
+  addresses, address ranges and ports. `NetworkRules::new` returns `None` for
+  an empty list. Replace `true` with `NetworkAccess::Any`.
 
 ## 0.2.0
 

@@ -1035,6 +1035,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures-util",
+ "http",
  "humantime",
  "libc",
  "mimalloc",

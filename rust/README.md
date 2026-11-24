@@ -156,8 +156,9 @@ for scheduling details.
 
 `VmOptions` defaults to a 512 MiB WebAssembly memory limit, with socket and
 HTTP access disabled. Fuel and lifetime limits are opt-in; the quickstart
-sets both. Set `network: true` for sockets and DNS, or `http: true` for guest
-HTTP requests through WASI. The `http` Cargo feature supplies HTTP support
+sets both. Set `network` for sockets and DNS, or `http` for guest HTTP
+requests through WASI: `NetworkAccess::Any` for any destination, or
+`NetworkAccess::Only(rules)` for an [allowlist](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/sandbox.md#network-allowlists). The `http` Cargo feature supplies HTTP support
 and is enabled by default; granting access to an individual VM is separate.
 
 Kettlecorn uses experimental Wasmtime component-model threading. Review

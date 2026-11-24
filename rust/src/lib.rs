@@ -24,7 +24,7 @@ mod vm;
 #[cfg(feature = "cli")]
 #[doc(hidden)]
 pub use cli::main as launch_cli;
-pub use engine::{Preload, Runtime};
+pub use engine::{NetworkAccess, NetworkRule, NetworkRules, Preload, Runtime};
 pub use error::Error;
 pub use num_bigint::BigInt;
 pub use protocol::Value;

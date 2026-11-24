@@ -2,12 +2,15 @@ mod cache;
 #[cfg(test)]
 mod embedding_tests;
 mod installed;
+mod network;
 mod root;
 mod runtime;
 pub(crate) mod streams;
 mod usage;
 
 pub(crate) use cache::CompilationCache;
+pub(crate) use network::HttpAccess;
+pub use network::{NetworkAccess, NetworkRule, NetworkRules};
 pub(crate) use root::RootOptions;
 pub(crate) use runtime::GuestOptions;
 #[cfg(any(feature = "cli", test))]
@@ -96,8 +99,12 @@ struct State {
     ctx: WasiCtx,
     table: ResourceTable,
     limits: Limits,
+    /// With a sockets allowlist, the rules and the addresses allowed names resolved to.
+    sockets: Option<Arc<network::SocketPolicy>>,
     #[cfg(feature = "http")]
     http: wasmtime_wasi_http::WasiHttpCtx,
+    #[cfg(feature = "http")]
+    http_policy: Option<network::HttpPolicy>,
 }
 
 impl WasiView for State {
@@ -115,7 +122,10 @@ impl wasmtime_wasi_http::WasiHttpView for State {
         wasmtime_wasi_http::WasiHttpCtxView {
             ctx: &mut self.http,
             table: &mut self.table,
-            hooks: wasmtime_wasi_http::default_hooks(),
+            hooks: match self.http_policy.as_mut() {
+                Some(policy) => policy,
+                None => wasmtime_wasi_http::default_hooks(),
+            },
         }
     }
 }
@@ -136,7 +146,7 @@ impl Runtime {
     pub(crate) fn prepare(&self, options: &GuestOptions) -> Result<PreparedRuntime> {
         self.validate(options)?;
         self.prepare_variant(
-            options.http,
+            options.http.granted(),
             options.max_fuel.is_some(),
             &options.cache,
             Some(&options.root),
@@ -211,7 +221,7 @@ impl PreparedRuntime {
         }
         self.runtime.validate(&options)?;
         anyhow::ensure!(
-            options.http == self.compiled.http
+            options.http.granted() == self.compiled.http
                 && options.max_fuel.is_some() == self.compiled.engine.fuel,
             "HTTP/fuel configuration differs from the prepared runtime"
         );
@@ -227,8 +237,23 @@ impl PreparedRuntime {
         let component = &self.compiled.component;
         let mut linker = Linker::<State>::new(engine);
         wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+        let sockets = match &options.network {
+            NetworkAccess::Only(rules) => {
+                // Replace Wasmtime's name lookup with one limited to allowed names.
+                linker.allow_shadowing(true);
+                wasmtime_wasi::p3::bindings::sockets::ip_name_lookup::add_to_linker::<
+                    State,
+                    network::Lookup,
+                >(&mut linker, |state| {
+                    network::LookupView(state.sockets.as_ref())
+                })?;
+                linker.allow_shadowing(false);
+                Some(network::SocketPolicy::new(rules.clone()))
+            }
+            _ => None,
+        };
         #[cfg(feature = "http")]
-        if options.http {
+        if options.http.granted() {
             wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
         }
 
@@ -241,12 +266,24 @@ impl PreparedRuntime {
             .args(&self.runtime.arguments(&options))
             .allow_blocking_current_thread(options.blocking_filesystem);
         builder.preopened_dir(&options.root, "/", wasmtime_wasi::FsPerms::ReadWrite)?;
-        if options.network {
+        if options.network.granted() {
             builder
-                .inherit_network()
                 .allow_tcp(true)
                 .allow_udp(true)
                 .allow_ip_name_lookup(true);
+        }
+        match &sockets {
+            Some(policy) => {
+                let policy = policy.clone();
+                builder.socket_addr_check(move |addr, use_| {
+                    let allowed = policy.allows(addr, use_);
+                    Box::pin(async move { allowed })
+                });
+            }
+            None if options.network.granted() => {
+                builder.inherit_network();
+            }
+            None => {}
         }
         let mut limits = StoreLimitsBuilder::new();
         if let Some(bytes) = options.max_memory {
@@ -258,8 +295,15 @@ impl PreparedRuntime {
                 ctx: builder.build(),
                 table: ResourceTable::new(),
                 limits: Limits::new(limits.build(), options.usage.clone()),
+                sockets,
                 #[cfg(feature = "http")]
                 http: wasmtime_wasi_http::WasiHttpCtx::new(),
+                #[cfg(feature = "http")]
+                http_policy: options
+                    .http
+                    .rules()
+                    .cloned()
+                    .map(|rules| network::HttpPolicy { rules }),
             },
         );
         let mut store = Metered::new(store, options.usage.clone(), options.max_fuel);
@@ -422,6 +466,19 @@ mod tests {
         assert!(!base.path().join("cache").exists());
     }
 
+    #[cfg(feature = "cli")]
+    #[test]
+    fn the_wasmtime_command_refuses_allowlists() {
+        let (_base, runtime, mut options) = fixture();
+        assert!(runtime.wasmtime_command(&options).is_ok());
+        let rules = NetworkRules::new(["10.0.0.0/8".parse().unwrap()]).unwrap();
+        options.network = NetworkAccess::Only(rules.clone());
+        assert!(runtime.wasmtime_command(&options).is_err());
+        options.network = NetworkAccess::Any;
+        options.http = HttpAccess::try_from(NetworkAccess::Only(rules)).unwrap();
+        assert!(runtime.wasmtime_command(&options).is_err());
+    }
+
     #[tokio::test]
     async fn concurrent_warmups_prepare_variants_without_a_guest_root() {
         let (base, runtime, options) = fixture();
@@ -433,7 +490,12 @@ mod tests {
             }
             for fuel in [false, true] {
                 let mut variant = options.clone();
-                variant.http = http;
+                let access = if http {
+                    NetworkAccess::Any
+                } else {
+                    NetworkAccess::Denied
+                };
+                variant.http = HttpAccess::try_from(access).unwrap();
                 variant.max_fuel = fuel.then_some(1);
                 variants.push(variant);
             }
@@ -443,7 +505,11 @@ mod tests {
             for _ in 0..4 {
                 let runtime = runtime.clone();
                 let mut options = crate::VmOptions::default();
-                options.http = variant.http;
+                options.http = if variant.http.granted() {
+                    NetworkAccess::Any
+                } else {
+                    NetworkAccess::Denied
+                };
                 options.max_fuel = variant.max_fuel;
                 warmups.spawn(async move { runtime.warm_up(&options).await });
             }
