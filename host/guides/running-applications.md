@@ -117,6 +117,14 @@ repeated, allow only the listed ones (see
 [sandbox and resource limits](sandbox.md) and [HTTP and Req](#http-and-req)
 for grant and certificate behavior.
 
+For example, allow guest HTTP requests to public addresses on port 443:
+
+```sh
+kettlecorn-run --http-allow public:443 script.exs
+```
+
+A hostname allowed by its resolved address requires a direct connection.
+
 For debugging with the Wasmtime CLI, see the development guide's
 [equivalent-command instructions](development.md#native-launcher).
 

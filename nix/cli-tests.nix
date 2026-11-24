@@ -1,4 +1,4 @@
-{ runCommand, unixtools, python3, fish, kettlecorn-run, runtime }:
+{ runCommand, unixtools, python3, fish, cacert, kettlecorn-run, runtime }:
 runCommand "kettlecorn-cli-tests"
 {
   nativeBuildInputs = [ kettlecorn-run python3 fish unixtools.ps ];
@@ -21,6 +21,17 @@ runCommand "kettlecorn-cli-tests"
     for file in manifest.json root beam.wasm beam-http.wasm bin; do ln -s ${runtime}/$file runtime/$file; done
     printf '\n' >> runtime/launch/env
     kettlecorn-run --runtime "$PWD/runtime" --network -e 'IO.puts(:launch_ok)' | grep -x launch_ok
+
+    # A socket allowlist gives the guest CA certificates, from --cacertfile or
+    # $SSL_CERT_FILE, as --network does; an HTTP allowlist alone doesn't.
+    awk '/BEGIN CERTIFICATE/ { n++ } n <= 2' ${cacert}/etc/ssl/certs/ca-bundle.crt > two.pem
+    test "$(grep -c 'BEGIN CERTIFICATE' two.pem)" -eq 2
+    cacerts='IO.puts(try do length(:public_key.cacerts_get()) catch _, _ -> :none end)'
+    kettlecorn-run --network-allow 127.0.0.1 --cacertfile two.pem -e "$cacerts" | grep -x 2
+    SSL_CERT_FILE="$PWD/two.pem" kettlecorn-run --network-allow 127.0.0.1 -e "$cacerts" | grep -x 2
+    SSL_CERT_FILE="$PWD/two.pem" kettlecorn-run --http-allow 127.0.0.1 -e "$cacerts" | grep -x none
+    kettlecorn-run --http-allow public -e 'IO.inspect(Kettlecorn.HTTP.request(:get, "http://127.0.0.1/"))' \
+      | grep -Fx '{:error, :http_request_denied}'
     kettlecorn-run ${../examples/01_hello.exs} one two | grep -F 'Arguments: ["one", "two"]'
     kettlecorn-run -e 'IO.puts(Enum.sum(1..10))' | grep -x 55
     KETTLECORN_MIX=1 kettlecorn-run -e 'IO.puts(:no_parent_pipe)' 3<&- | grep -x no_parent_pipe
