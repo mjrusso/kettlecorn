@@ -6,9 +6,10 @@ defmodule Kettlecorn.Host do
       VM's `:owner` as `{:kettlecorn, vm, {:message, term}}`. A Rust host
       delivers it through `Vm::subscribe` or `VmOptions::events`.
     * `call/3` asks the host to do something and waits for the answer: a
-      *host call*. An Elixir host answers with `Kettlecorn.reply/3`. A Rust
-      host invokes the async function registered under `name` with
-      `VmOptions::register`.
+      *host call*. On Elixir, configure named functions with `:handlers` or a
+      `Kettlecorn.HostHandler` with `:handler`. With manual delivery, the
+      VM's owner answers using `Kettlecorn.reply/3`. On Rust, register an
+      async function under `name` with `VmOptions::register`.
 
   An Elixir host sends messages to guest processes with `Kettlecorn.send/4`;
   they arrive as `{:wasm, payload}`. Both APIs can call and cast to registered
@@ -40,10 +41,26 @@ defmodule Kettlecorn.Host do
   Set `:timeout` to change how long the guest waits for a reply. It defaults
   to 5,000 ms. If the wait expires, the call returns `{:error, :timeout}`.
   If the request fails the frame size check, it returns
-  `{:error, :frame_too_large}` before sending.
+  `{:error, :frame_too_large}` before sending. After a call returns
+  `{:error, :timeout}`, the guest tells the host to cancel it and drops a
+  reply that arrives later. A call made while the guest's host-call process
+  isn't running, before the guest's applications start (for example from an
+  `@on_load` callback during preload) or while that process restarts, gets a
+  late reply in its mailbox instead, as `{:wasm, {token, result}}`, and
+  isn't cancelled if its caller exits. If that process stops while a call
+  waits, the call is cancelled and returns `{:error, :interrupted}`; the host
+  may already have handled it. A `:timeout` other than `:infinity` or an
+  integer from 0 to 4,294,967,295, the longest `receive` accepts, raises
+  `ArgumentError` before the call is sent.
   """
   @spec call(String.t(), map(), timeout: timeout()) :: {:ok, term()} | {:error, term()}
   def call(name, args \\ %{}, opts \\ []) when is_binary(name) and is_map(args) do
-    :wasm.host_call(name, args, opts)
+    case Keyword.get(opts, :timeout, 5_000) do
+      timeout when timeout == :infinity or timeout in 0..4_294_967_295 ->
+        Kettlecorn.HostCalls.call(name, args, timeout)
+
+      timeout ->
+        raise ArgumentError, "invalid host call timeout: #{inspect(timeout)}"
+    end
   end
 end

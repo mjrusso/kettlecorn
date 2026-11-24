@@ -84,13 +84,36 @@ payloads and message delivery.
 `message` frames carry the ETF envelope
 `%{type: :vm_message, data: term}`, produced by `:wasm.send/1`
 (`Kettlecorn.Host.send/1`). A host call,
-`Kettlecorn.Host.call(name, args)` (`:wasm.host_call/3`), sends
+`Kettlecorn.Host.call(name, args)` sends
 `%{type: :host_call, name: name, args: args, reply_to: binary}`;
 the host answers by sending `{:ok, value}` or `{:error, reason}` to the
-pid target `reply_to`. The guest returns the result tuple unchanged, or
-`{:error, :timeout}` if no reply is delivered before the call's timeout.
+pid target `reply_to`, which hosts treat as opaque. While the guest's
+`Kettlecorn.HostCalls` process runs, `reply_to` names it, and it passes the
+reply to the caller while the call is live. While it isn't running, before
+the guest's applications start (as when preload runs an `@on_load`
+callback) or while it restarts, `reply_to` names the caller. The guest
+returns the result tuple unchanged, `{:error, :timeout}` if no reply is
+delivered before the call's timeout, or `{:error, :interrupted}` if
+`Kettlecorn.HostCalls` stops while the call waits; the host may already
+have handled that call.
 Host error reasons are binaries, so the guest can distinguish host errors
-from its own `{:error, :timeout}`.
+from its own `{:error, :timeout}`. Both hosts answer a request whose name
+isn't a UTF-8 binary or whose `args` isn't a map with
+`{:error, "invalid or oversized host call arguments"}`, and ignore a
+request whose `reply_to` is longer than 256 bytes. The Rust host, and
+the Elixir host with handlers, drop a request whose `reply_to` matches a
+call still in progress, since the reply would reach that call's caller.
+
+When the call times out, or the calling process exits before the reply, the
+guest sends `%{type: :host_call_cancel, reply_to: binary}`, with the call's
+`reply_to`. It also sends it for an interrupted call. The host can stop
+work on the call. The guest drops a reply sent afterwards, except for a
+call whose `reply_to` names the caller: its late reply reaches the caller's
+mailbox. `Kettlecorn.HostCalls` watches the callers of the calls it passes
+replies for, and sends the notice for one that exits; a call whose
+`reply_to` names the caller gets no notice if the caller exits. A host can receive a notice after it has replied. Rust and Elixir handlers
+ignore notices for calls they are no longer tracking. In Elixir's manual
+delivery mode, the owner receives the notice.
 
 `Kettlecorn.reply/3` queues the reply without confirming delivery. A reply
 containing an atom absent from the guest's atom table is rejected; the

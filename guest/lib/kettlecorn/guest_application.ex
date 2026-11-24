@@ -10,7 +10,7 @@ defmodule Kettlecorn.GuestApplication do
     # Try the WASI DNS NIF before guest host files; DNS requires the network grant.
     :inet_db.set_lookup([:native, :file])
     install_req_adapter()
-    children = [Kettlecorn.Proxy, Kettlecorn.Evaluator]
+    children = [Kettlecorn.HostCalls, Kettlecorn.Proxy, Kettlecorn.Evaluator]
     Supervisor.start_link(children, strategy: :one_for_one, name: Kettlecorn.GuestSupervisor)
   end
 
