@@ -14,3 +14,8 @@ function transform(event)
   processed = processed + 1
   return event.id, total, route, processed
 end
+
+function receipt(event, issued_at, code)
+  local valid_until = issued_at + 30 * 24 * 60 * 60
+  return event.id, issued_at, valid_until, code
+end

@@ -253,9 +253,23 @@ calls, including mutations made before an error. The example also sets Lua
 limits on instructions, call depth, and string size.
 The app bundles its own Lua dependency.
 
-The [comparison notebook](../host/notebooks/lua.livemd) loads Lua directly
-from Livebook, runs the same transformation on the host and in the guest,
-and exposes a controlled host operation without cooking an app.
+The app disables Lua's clock and random functions. The bundled receipt
+script takes the time in Unix seconds and the code from the request.
+It returns the event's ID, `issued_at` (that time),
+`valid_until` (30 days later, in Unix seconds) and the code:
+
+```elixir
+{:ok, vm} = Kettlecorn.start_link(app: "_kettlecorn/examples/lua")
+
+{:ok, {:ok, ["order-1", 1_767_225_600, 1_769_817_600, 123_456]}} =
+  Kettlecorn.call(vm, :lua_example, {:receipt, %{"id" => "order-1"}, 1_767_225_600, 123_456})
+
+Kettlecorn.stop(vm)
+```
+
+The requests are the app's only inputs. Sent in the same order to a new VM,
+they return the same results; see
+[controlled inputs](../host/guides/sandbox.md#controlled-inputs).
 
 ### [`apps/dune`](apps/dune)
 

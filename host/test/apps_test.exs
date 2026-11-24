@@ -57,6 +57,38 @@ defmodule Kettlecorn.AppsTest do
              Kettlecorn.call(vm, :lua_example, {:transform, event})
   end
 
+  test "a Lua run replays from its requests" do
+    order = %{"id" => "order-1", "items" => [%{"unit_price_cents" => 2500, "quantity" => 2}]}
+
+    # 2026-01-01T00:00:00Z, then an hour later. The transform count makes
+    # each result depend on the requests before it.
+    requests = [
+      {:transform, order},
+      {:receipt, %{"id" => "order-1"}, 1_767_225_600, 123_456},
+      # Rejected without restarting the worker, which would reset the count.
+      {:receipt, %{"id" => "order-1"}, 1_767_225_600, "123456"},
+      {:transform, order},
+      {:receipt, %{"id" => "order-2"}, 1_767_229_200, 654_321}
+    ]
+
+    run = fn ->
+      vm = start_vm(app: example("lua"))
+      Enum.map(requests, &Kettlecorn.call(vm, :lua_example, &1))
+    end
+
+    first = run.()
+
+    assert first == [
+             {:ok, {:ok, ["order-1", 5000, "standard", 1]}},
+             {:ok, {:ok, ["order-1", 1_767_225_600, 1_769_817_600, 123_456]}},
+             {:ok, {:error, "issued_at and code must be integers"}},
+             {:ok, {:ok, ["order-1", 5000, "standard", 2]}},
+             {:ok, {:ok, ["order-2", 1_767_229_200, 1_769_821_200, 654_321]}}
+           ]
+
+    assert run.() == first
+  end
+
   test "Dune evaluates code that can't observe the clock, randomness, or other processes" do
     vm = start_vm(app: example("dune"), preload: :strict, owner: self())
     eval = &Kettlecorn.call(vm, :dune_example, {:eval, &1}, 15_000)
