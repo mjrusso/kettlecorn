@@ -2,9 +2,8 @@ mod fd;
 mod terminal;
 
 use crate::engine::{
-    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, HttpAccess, Mode,
-    NetworkAccess, NetworkRules, Preload, RootOptions, Runtime, Usage, WASMTIME_VERSION,
-    streams::Streams,
+    Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, Mode, NetworkAccess,
+    NetworkRules, Preload, RootOptions, Runtime, Usage, WASMTIME_VERSION, streams::Streams,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -87,7 +86,8 @@ struct Args {
     #[arg(long, conflicts_with = "http_allow")]
     http: bool,
     /// Allow outgoing HTTP only to this destination (repeatable): a host name,
-    /// `*.domain`, or an address or CIDR range, with an optional `:port`
+    /// `*.domain`, an address or CIDR range (IPv6 in brackets), or `public`, with
+    /// an optional `:port`
     #[arg(long, value_name = "RULE")]
     http_allow: Vec<crate::NetworkRule>,
     /// Start an interactive guest IEx session
@@ -250,7 +250,7 @@ async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
         .timeout
         .or_else(|| args.lifetime_ms.map(Duration::from_millis));
     options.network = access(args.network, args.network_allow);
-    options.http = HttpAccess::try_from(access(args.http, args.http_allow))?;
+    options.http = access(args.http, args.http_allow);
     options.schedulers = args.schedulers;
     options.env = args.env.into_iter().collect::<BTreeMap<_, _>>();
     options.apps = args.apps;
@@ -483,13 +483,13 @@ pub fn main() {
 mod tests {
     #[test]
     fn the_wasmtime_command_refuses_an_http_proxy() {
-        use super::{GuestOptions, HttpAccess, NetworkAccess, check_http_proxy as check};
+        use super::{GuestOptions, NetworkAccess, check_http_proxy as check};
         let mut options = GuestOptions::new("/root");
-        options.http = HttpAccess::try_from(NetworkAccess::Any).unwrap();
+        options.http = NetworkAccess::Any;
         assert!(check(&options, || Ok(false)).is_ok());
         assert!(check(&options, || Ok(true)).is_err());
         // Without the grant, the proxy settings aren't read, even if invalid.
-        options.http = HttpAccess::default();
+        options.http = NetworkAccess::Denied;
         assert!(check(&options, || anyhow::bail!("invalid HTTP proxy")).is_ok());
     }
 

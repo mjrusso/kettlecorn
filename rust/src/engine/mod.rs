@@ -11,7 +11,6 @@ pub(crate) mod streams;
 mod usage;
 
 pub(crate) use cache::CompilationCache;
-pub(crate) use network::HttpAccess;
 
 /// Whether the environment names a proxy for the HTTP grant.
 #[cfg(feature = "cli")]
@@ -490,7 +489,7 @@ mod tests {
         options.network = NetworkAccess::Only(rules.clone());
         assert!(runtime.wasmtime_command(&options).is_err());
         options.network = NetworkAccess::Any;
-        options.http = HttpAccess::try_from(NetworkAccess::Only(rules)).unwrap();
+        options.http = NetworkAccess::Only(rules);
         assert!(runtime.wasmtime_command(&options).is_err());
     }
 
@@ -510,7 +509,7 @@ mod tests {
                 } else {
                     NetworkAccess::Denied
                 };
-                variant.http = HttpAccess::try_from(access).unwrap();
+                variant.http = access;
                 variant.max_fuel = fuel.then_some(1);
                 variants.push(variant);
             }

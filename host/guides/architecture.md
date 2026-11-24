@@ -515,6 +515,26 @@ enabled. `Kettlecorn.Boot.network_granted?/0` reads this runtime setting;
 [Req's default adapter](running-applications.md#http-and-req) during startup.
 The flag is informational; Wasmtime enforces socket and DNS permissions.
 
+## Network allowlists
+
+`rust/src/engine/network.rs` implements [allowlists](sandbox.md#network-allowlists).
+For a sockets allowlist, the engine links Wasmtime's WASI interfaces, then
+replaces `wasi:sockets/ip-name-lookup` with its own implementation: it
+resolves only names a rule lists (any name with `public`) and records the
+addresses each one returned, with the rule's ports. Wasmtime's
+`socket_addr_check` calls the same policy for every bind, connect, listen,
+accept, and UDP send and receive, with the actual address: binds are
+allowed, listening and accepting are refused, and the rest need an address
+rule or a recorded address.
+
+The HTTP grant uses the sender in `rust/src/engine/outgoing.rs`. For
+direct requests authorized by an address rule, the sender resolves the
+hostname, filters the results, and connects to an address from that same
+filtered list. A proxy resolves hostnames itself, so these requests
+require a direct connection. For proxied HTTPS requests, the launcher
+opens a `CONNECT` tunnel and verifies the origin's TLS certificate using
+the bundled Mozilla roots.
+
 ## CA certificates
 
 OTP finds a system's CA certificates by its OS type, and has no location

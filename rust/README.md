@@ -161,6 +161,18 @@ requests through WASI: `NetworkAccess::Any` for any destination, or
 `NetworkAccess::Only(rules)` for an [allowlist](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/sandbox.md#network-allowlists). The `http` Cargo feature supplies HTTP support
 and is enabled by default; granting access to an individual VM is separate.
 
+```rust
+use kettlecorn::{NetworkAccess, NetworkRules, VmOptions};
+
+let mut options = VmOptions::default();
+let rules = NetworkRules::new(["public:443".parse().expect("valid rule")]).expect("one rule");
+options.http = NetworkAccess::Only(rules);
+```
+
+This grant allows HTTP requests on port 443 to addresses that match the
+`public` rule. A hostname allowed by its resolved address requires a
+direct connection.
+
 Kettlecorn uses experimental Wasmtime component-model threading. Review
 [sandbox limits and network grants](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/sandbox.md)
 before running untrusted workloads. The memory limit covers WebAssembly

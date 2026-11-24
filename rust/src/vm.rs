@@ -48,9 +48,12 @@ pub struct VmOptions {
     /// public addresses only.
     /// Defaults to [`NetworkAccess::Denied`]. Host CA certificates are not copied into the guest.
     pub network: NetworkAccess,
-    /// Outgoing HTTP through WASI, with the same choices as `network`; `public` rules are not
-    /// supported. Requests go through the proxy in the process's `https_proxy`/`HTTPS_PROXY`
-    /// or `http_proxy`/`HTTP_PROXY`, except `no_proxy`/`NO_PROXY` hosts and loopback.
+    /// Outgoing HTTP through WASI, with the same choices as `network`. Requests go through
+    /// the proxy in the process's `https_proxy`/`HTTPS_PROXY` or `http_proxy`/`HTTP_PROXY`,
+    /// except `no_proxy`/`NO_PROXY` hosts and loopback. With [`NetworkAccess::Only`], a
+    /// request to a host name that no name rule allows connects directly, only to the
+    /// resolved addresses an address rule allows; it is denied when a proxy applies to it,
+    /// because the proxy would resolve the name.
     /// Defaults to [`NetworkAccess::Denied`]; requires the `http` Cargo feature.
     pub http: NetworkAccess,
     /// Cooked Mix bundle copied into the guest at `/app`. Defaults to none.
@@ -260,9 +263,7 @@ impl Runtime {
     /// Dropping the future can leave preparation running to completion.
     pub async fn warm_up(&self, options: &VmOptions) -> Result<(), Error> {
         let runtime = self.clone();
-        let http = crate::engine::HttpAccess::try_from(options.http.clone())
-            .map_err(Error::InvalidOptions)?
-            .granted();
+        let http = options.http.granted();
         let fuel = options.max_fuel.is_some();
         tokio::task::spawn_blocking(move || {
             runtime
@@ -279,7 +280,7 @@ impl Runtime {
     /// Call on a Tokio runtime with I/O and time enabled.
     /// Execution runs as a Tokio task without a dedicated OS thread. Dropping the
     /// returned [`Vm`] cancels it; [`Vm::shutdown`] also waits for cleanup.
-    pub async fn start(&self, mut options: VmOptions) -> Result<Vm, Error> {
+    pub async fn start(&self, options: VmOptions) -> Result<Vm, Error> {
         if options.frame_write_timeout.is_zero() {
             return Err(Error::InvalidOptions(anyhow!(
                 "frame_write_timeout must be positive"
@@ -299,21 +300,19 @@ impl Runtime {
                 "max_pending_requests exceeds {max_requests}"
             )));
         }
-        let http = crate::engine::HttpAccess::try_from(std::mem::take(&mut options.http))
-            .map_err(Error::InvalidOptions)?;
         if options.max_host_calls.get() > Semaphore::MAX_PERMITS {
             return Err(Error::InvalidOptions(anyhow!(
                 "max_host_calls exceeds {}",
                 Semaphore::MAX_PERMITS
             )));
         }
-        tokio::time::timeout(options.boot_timeout, self.start_vm(options, http))
+        tokio::time::timeout(options.boot_timeout, self.start_vm(options))
             .await
             .map_err(|_| Error::BootDeadline)?
             .map_err(Error::Boot)
     }
 
-    async fn start_vm(&self, options: VmOptions, http: crate::engine::HttpAccess) -> Result<Vm> {
+    async fn start_vm(&self, options: VmOptions) -> Result<Vm> {
         let runtime = self.clone();
         let usage = Arc::<Usage>::default();
         let metered = options.max_fuel.is_some();
@@ -325,7 +324,7 @@ impl Runtime {
                 max_fuel: options.max_fuel,
                 max_lifetime: options.max_lifetime,
                 network: options.network,
-                http,
+                http: options.http,
                 env: [(
                     "KETTLECORN_MAX_GUEST_FRAME_BYTES".into(),
                     protocol::MAX_FRAME_BYTES.to_string(),

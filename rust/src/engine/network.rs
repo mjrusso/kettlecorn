@@ -1,15 +1,4 @@
 //! Destination rules for the network and HTTP grants.
-//!
-//! With an allowlist, the sockets grant links its own `wasi:sockets/ip-name-lookup`
-//! (`Lookup`): it resolves only names a rule allows (any name with `public`) and
-//! records the addresses each allowed name returned, with that rule's ports, up
-//! to `MAX_PERMISSIONS` address and port pairs per VM. Names are looked up in
-//! absolute form, so the host's search domains don't apply. A lookup returns
-//! only the addresses the guest may reach. The socket check admits a
-//! connection, UDP datagram, or received datagram when an address rule matches
-//! it, or when an allowed lookup returned its address for its port. Listening
-//! and accepting are refused; local binds are allowed. HTTP requests are
-//! checked by the URL's host and port (`allows_url`) before they are sent.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -38,6 +27,7 @@ impl NetworkAccess {
         !matches!(self, Self::Denied)
     }
 
+    #[cfg(any(feature = "cli", feature = "http"))]
     pub(crate) fn rules(&self) -> Option<&NetworkRules> {
         match self {
             Self::Only(rules) => Some(rules),
@@ -56,6 +46,29 @@ impl NetworkRules {
         let rules: Arc<[NetworkRule]> = rules.into_iter().collect();
         (!rules.is_empty()).then_some(Self(rules))
     }
+
+    /// Whether an address rule allows `ip` on `port`.
+    pub(crate) fn allows_address(&self, ip: IpAddr, port: u16) -> bool {
+        let ip = ip.to_canonical();
+        self.iter()
+            .any(|rule| rule.allows_port(port) && rule.allows_ip(ip))
+    }
+
+    /// Whether a name rule allows the host name `name` on `port`.
+    #[cfg(feature = "http")]
+    pub(crate) fn allows_name(&self, name: &str, port: u16) -> bool {
+        let name = comparison_name(name);
+        self.iter()
+            .any(|rule| rule.allows_port(port) && rule.allows_name(&name))
+    }
+
+    /// Whether an address rule applies to `port`.
+    #[cfg(feature = "http")]
+    pub(crate) fn has_address_rule(&self, port: u16) -> bool {
+        self.iter().any(|rule| {
+            rule.allows_port(port) && matches!(rule.target, Target::Range(..) | Target::Public)
+        })
+    }
 }
 
 impl std::ops::Deref for NetworkRules {
@@ -66,38 +79,12 @@ impl std::ops::Deref for NetworkRules {
     }
 }
 
-/// The HTTP grant's access, which has no `public` rule.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct HttpAccess(NetworkAccess);
-
-impl TryFrom<NetworkAccess> for HttpAccess {
-    type Error = anyhow::Error;
-
-    fn try_from(access: NetworkAccess) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            !access
-                .rules()
-                .is_some_and(|rules| rules.iter().any(|rule| rule.target == Target::Public)),
-            "the HTTP grant doesn't support `public` rules yet; list host names or addresses"
-        );
-        Ok(Self(access))
-    }
-}
-
-impl std::ops::Deref for HttpAccess {
-    type Target = NetworkAccess;
-
-    fn deref(&self) -> &NetworkAccess {
-        &self.0
-    }
-}
-
 /// One destination a grant allows, parsed from a string:
 ///
 /// * a host name, `api.example.com`, or every subdomain of one, `*.example.com`;
 /// * an IP address or CIDR range, `10.1.2.3`, `10.0.0.0/8`, `[fd00::1]`, `[fd00::/8]`;
 /// * `public`: any public address: IPv4 outside the special-purpose ranges, or
-///   IPv6 global unicast outside them. Not available for HTTP.
+///   IPv6 global unicast outside them.
 ///
 /// Rules are case insensitive. IPv4-mapped IPv6 rules mean the IPv4 address.
 ///
@@ -377,9 +364,7 @@ impl SocketPolicy {
 
     fn reaches(&self, addr: SocketAddr) -> bool {
         let (ip, port) = (addr.ip().to_canonical(), addr.port());
-        self.rules
-            .iter()
-            .any(|rule| rule.allows_port(port) && rule.allows_ip(ip))
+        self.rules.allows_address(ip, port)
             || self
                 .resolved
                 .lock()
@@ -548,30 +533,6 @@ impl<U> HostWithStore<U> for Lookup {
     }
 }
 
-/// Whether `rules` allow an HTTP request to `uri`, by its host and port.
-#[cfg(feature = "http")]
-pub(crate) fn allows_url(rules: &[NetworkRule], uri: &http::Uri) -> bool {
-    let Some(host) = uri.host() else {
-        return false;
-    };
-    let port = uri
-        .port_u16()
-        .unwrap_or(if uri.scheme_str() == Some("http") {
-            80
-        } else {
-            443
-        });
-    let literal = host.trim_start_matches('[').trim_end_matches(']');
-    let mut rules = rules.iter().filter(|rule| rule.allows_port(port));
-    match literal.parse::<IpAddr>() {
-        Ok(ip) => rules.any(|rule| rule.allows_ip(ip.to_canonical())),
-        Err(_) => {
-            let name = comparison_name(host);
-            rules.any(|rule| rule.allows_name(&name))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,6 +547,7 @@ mod tests {
 
     #[test]
     fn rules_parse_and_print_in_one_form() {
+        assert!(NetworkRules::new([]).is_none());
         for text in [
             "api.example.com",
             "api.example.com:443",
@@ -784,12 +746,5 @@ mod tests {
             policy.answers(vec![private(5000), public], &[]),
             vec![public]
         );
-    }
-
-    #[test]
-    fn http_access_rejects_public_rules() {
-        assert!(NetworkRules::new([]).is_none());
-        assert!(HttpAccess::try_from(NetworkAccess::Only(rules(&["public"]))).is_err());
-        assert!(HttpAccess::try_from(NetworkAccess::Only(rules(&["10.0.0.0/8"]))).is_ok());
     }
 }

@@ -1,6 +1,5 @@
 use super::{
-    CompilationCache, HttpAccess, NetworkAccess, Preparation, RootOptions, Usage, WASMTIME_VERSION,
-    root,
+    CompilationCache, NetworkAccess, Preparation, RootOptions, Usage, WASMTIME_VERSION, root,
 };
 use crate::Error;
 use anyhow::{Context, Result, bail, ensure};
@@ -47,7 +46,7 @@ pub(crate) struct GuestOptions {
     pub max_fuel: Option<u64>,
     pub max_lifetime: Option<Duration>,
     pub network: NetworkAccess,
-    pub http: HttpAccess,
+    pub http: NetworkAccess,
     pub schedulers: usize,
     pub env: BTreeMap<String, String>,
     pub apps: Vec<String>,
@@ -73,7 +72,7 @@ impl GuestOptions {
             max_fuel: None,
             max_lifetime: None,
             network: NetworkAccess::Denied,
-            http: HttpAccess::default(),
+            http: NetworkAccess::Denied,
             schedulers: 1,
             env: BTreeMap::new(),
             apps: Vec::new(),

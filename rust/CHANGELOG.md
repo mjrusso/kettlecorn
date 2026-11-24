@@ -29,8 +29,10 @@
 * **Breaking:** `VmOptions::network` and `VmOptions::http` are a
   `NetworkAccess` instead of a `bool`: `Denied`, `Any`, or
   `Only(NetworkRules)`, which limits the grant to the listed host names,
-  addresses, address ranges and ports. `NetworkRules::new` returns `None` for
-  an empty list. Replace `true` with `NetworkAccess::Any`.
+  addresses, address ranges and ports. Replace `true` with
+  `NetworkAccess::Any`. `NetworkRules::new` returns `None` for an empty list.
+* HTTP allowlists accept `public`. A hostname request allowed by its
+  resolved address requires a direct connection.
 * The HTTP grant sends guest requests through the proxy in the process's
   `http_proxy`/`HTTP_PROXY` and `https_proxy`/`HTTPS_PROXY`, honoring
   `no_proxy`/`NO_PROXY`; loopback hosts are reached directly.

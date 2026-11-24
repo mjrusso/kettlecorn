@@ -16,7 +16,8 @@ use http::{HeaderValue, Method, Request, Response, Uri};
 use http_body_util::{BodyExt, Empty};
 use hyper_util::rt::TokioIo;
 use std::env;
-use std::net::{IpAddr, SocketAddr};
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -67,20 +68,10 @@ impl wasmtime_wasi_http::WasiHttpHooks for HttpHooks {
     ) -> Box<dyn Future<Output = wasmtime_wasi_http::Result<(Response<WasiBody>, IoFuture)>> + Send>
     {
         _ = fut;
-        if let Some(rules) = &self.rules
-            && !super::network::allows_url(rules, request.uri())
-        {
-            return Box::new(async { Err(Error::HttpRequestDenied) });
-        }
-        let proxy = self
-            .proxies
-            .as_ref()
-            .and_then(|proxies| proxies.for_uri(request.uri()))
-            .cloned();
+        let connector = Origin::of(request.uri()).map(|origin| Connector::new(self, origin));
         let tls = self.tls.clone();
-        let absolute = self.rules.is_some();
         Box::new(async move {
-            let (response, io) = send(request, options, proxy, absolute, tls).await?;
+            let (response, io) = send(request, options, connector?, tls).await?;
             Ok((
                 response.map(BodyExt::boxed_unsync),
                 Box::new(io) as IoFuture,
@@ -89,12 +80,139 @@ impl wasmtime_wasi_http::WasiHttpHooks for HttpHooks {
     }
 }
 
+struct Origin {
+    host: Host,
+    port: u16,
+    tls: bool,
+}
+
+enum Host {
+    Address(IpAddr),
+    /// A host name, as the URL writes it.
+    Name(String),
+}
+
+impl Origin {
+    /// Fails for a URL without a host, and for a bracketed host that isn't an
+    /// IPv6 address, such as one with a zone index.
+    fn of(uri: &Uri) -> Result<Self, Error> {
+        let host = uri.host().ok_or(Error::HttpRequestUriInvalid)?;
+        let host = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+            Some(literal) => Host::Address(
+                literal
+                    .parse::<Ipv6Addr>()
+                    .map_err(|_| Error::HttpRequestUriInvalid)?
+                    .into(),
+            ),
+            None => host.parse::<Ipv4Addr>().map_or_else(
+                |_| Host::Name(host.to_owned()),
+                |ip| Host::Address(ip.into()),
+            ),
+        };
+        let tls = uri.scheme() == Some(&Scheme::HTTPS);
+        Ok(Self {
+            host,
+            port: uri.port_u16().unwrap_or(if tls { 443 } else { 80 }),
+            tls,
+        })
+    }
+}
+
+/// `host:port`, with an IPv6 address in brackets.
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.host {
+            Host::Address(ip) => SocketAddr::new(*ip, self.port).fmt(f),
+            Host::Name(name) => write!(f, "{name}:{}", self.port),
+        }
+    }
+}
+
+struct Connector {
+    origin: Origin,
+    proxy: Option<Proxy>,
+    rules: Option<NetworkRules>,
+}
+
+impl Connector {
+    fn new(hooks: &HttpHooks, origin: Origin) -> Self {
+        let proxy = hooks
+            .proxies
+            .as_ref()
+            .and_then(|proxies| proxies.for_origin(&origin))
+            .cloned();
+        Self {
+            origin,
+            proxy,
+            rules: hooks.rules.clone(),
+        }
+    }
+
+    /// An address rule for a hostname requires a direct connection.
+    /// The proxy would resolve the name independently of the allowlist check.
+    async fn connect(&self) -> Result<TcpStream, Error> {
+        let Origin { host, port, .. } = &self.origin;
+        let port = *port;
+        let filter = match (&self.rules, host) {
+            (None, _) => None,
+            (Some(rules), Host::Address(ip)) if rules.allows_address(*ip, port) => None,
+            (Some(rules), Host::Name(name)) if rules.allows_name(name, port) => None,
+            (Some(rules), Host::Name(_))
+                if self.proxy.is_none() && rules.has_address_rule(port) =>
+            {
+                Some(rules)
+            }
+            (Some(_), _) => return Err(Error::HttpRequestDenied),
+        };
+        if let Some(proxy) = &self.proxy {
+            return TcpStream::connect(&proxy.authority)
+                .await
+                .map_err(Error::Connect);
+        }
+        let ips = match host {
+            Host::Address(ip) => vec![*ip],
+            Host::Name(name) if self.rules.is_some() => super::network::lookup_absolute(name)
+                .await
+                .map_err(Error::Connect)?,
+            Host::Name(name) => {
+                return TcpStream::connect((name.as_str(), port))
+                    .await
+                    .map_err(Error::Connect);
+            }
+        };
+        dial(ips, port, filter).await
+    }
+}
+
+/// Connects to the first of `ips` that accepts on `port`, trying only those
+/// that `filter` allows on it.
+async fn dial(
+    ips: Vec<IpAddr>,
+    port: u16,
+    filter: Option<&NetworkRules>,
+) -> Result<TcpStream, Error> {
+    let resolved = !ips.is_empty();
+    let addresses: Vec<SocketAddr> = ips
+        .into_iter()
+        .filter(|ip| filter.is_none_or(|rules| rules.allows_address(*ip, port)))
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect();
+    if resolved && addresses.is_empty() {
+        return Err(Error::DestinationIpProhibited);
+    }
+    TcpStream::connect(&addresses[..])
+        .await
+        .map_err(Error::Connect)
+}
+
 /// The proxies from the launcher's environment.
 pub(crate) struct Proxies {
     http: Option<Proxy>,
     https: Option<Proxy>,
-    /// Lowercase host names, domains and addresses.
-    direct: Vec<String>,
+    /// `NO_PROXY` host names and domains, lowercase.
+    direct_names: Vec<String>,
+    /// `NO_PROXY` addresses, matched by value rather than spelling.
+    direct_addresses: Vec<IpAddr>,
 }
 
 #[derive(Clone)]
@@ -123,7 +241,7 @@ impl Proxies {
                 .map(|(name, url)| Proxy::parse(&name, &url))
                 .transpose()
         };
-        let direct: Vec<String> = get("no_proxy", "NO_PROXY")
+        let entries: Vec<String> = get("no_proxy", "NO_PROXY")
             .map(|(_, value)| value)
             .unwrap_or_default()
             .split(',')
@@ -137,8 +255,19 @@ impl Proxies {
             .filter(|entry| !entry.is_empty())
             .map(str::to_ascii_lowercase)
             .collect();
-        if direct.iter().any(|entry| entry == "*") {
+        if entries.iter().any(|entry| entry == "*") {
             return Ok(None);
+        }
+        let (mut direct_names, mut direct_addresses) = (Vec::new(), Vec::new());
+        for entry in entries {
+            match entry
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<IpAddr>()
+            {
+                Ok(ip) => direct_addresses.push(ip.to_canonical()),
+                Err(_) => direct_names.push(entry),
+            }
         }
         let http = proxy("http_proxy", "HTTP_PROXY")?;
         let https = proxy("https_proxy", "HTTPS_PROXY")?;
@@ -148,32 +277,40 @@ impl Proxies {
         Ok(Some(Self {
             http,
             https,
-            direct,
+            direct_names,
+            direct_addresses,
         }))
     }
 
-    fn for_uri(&self, uri: &Uri) -> Option<&Proxy> {
-        let host = uri
-            .host()?
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
-        let loopback = host == "localhost"
-            || host.ends_with(".localhost")
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|ip| ip.to_canonical().is_loopback());
-        let direct = self.direct.iter().any(|entry| {
-            host == *entry
-                || host
-                    .strip_suffix(entry.as_str())
-                    .is_some_and(|rest| rest.ends_with('.'))
-        });
-        if loopback || direct {
+    fn direct_address(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        ip.is_loopback() || self.direct_addresses.contains(&ip)
+    }
+
+    fn for_origin(&self, origin: &Origin) -> Option<&Proxy> {
+        let direct = match &origin.host {
+            Host::Address(ip) => self.direct_address(*ip),
+            Host::Name(name) => {
+                let name = name.trim_end_matches('.').to_ascii_lowercase();
+                // For proxy bypass, also recognize IP addresses with a trailing dot.
+                match name.parse::<IpAddr>() {
+                    Ok(ip) => self.direct_address(ip),
+                    Err(_) => {
+                        let within = |domain: &str| {
+                            name == domain
+                                || name
+                                    .strip_suffix(domain)
+                                    .is_some_and(|rest| rest.ends_with('.'))
+                        };
+                        within("localhost") || self.direct_names.iter().any(|entry| within(entry))
+                    }
+                }
+            }
+        };
+        if direct {
             return None;
         }
-        if uri.scheme() == Some(&Scheme::HTTPS) {
+        if origin.tls {
             self.https.as_ref()
         } else {
             self.http.as_ref()
@@ -230,14 +367,11 @@ impl Proxy {
 trait Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 impl<T> Stream for T where T: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 
-/// Sends `request` to its origin, or through `proxy`, verifying TLS with
-/// `tls`. With `absolute`, a direct connection looks up the origin's host name
-/// with `lookup_absolute`.
+/// Sends `request` through `connector`, verifying TLS with `tls`.
 async fn send(
     mut request: Request<WasiBody>,
     options: Option<RequestOptions>,
-    proxy: Option<Proxy>,
-    absolute: bool,
+    connector: Connector,
     tls: Arc<rustls::ClientConfig>,
 ) -> Result<
     (
@@ -246,14 +380,8 @@ async fn send(
     ),
     Error,
 > {
-    let uri = request.uri();
-    let authority = uri.authority().ok_or(Error::HttpRequestUriInvalid)?;
-    let use_tls = uri.scheme() == Some(&Scheme::HTTPS);
-    let host = authority.host().to_owned();
-    let port = authority
-        .port_u16()
-        .unwrap_or(if use_tls { 443 } else { 80 });
-    let origin = format!("{host}:{port}");
+    let origin = connector.origin.to_string();
+    let use_tls = connector.origin.tls;
     let timeout = |pick: fn(&RequestOptions) -> Option<Duration>| {
         options
             .as_ref()
@@ -265,35 +393,19 @@ async fn send(
     let between_bytes_timeout = timeout(|o| o.between_bytes_timeout).max(Duration::new(0, 1));
 
     let connect = async {
-        let stream = match &proxy {
-            Some(proxy) => TcpStream::connect(&proxy.authority).await,
-            None if absolute && !host.starts_with('[') && host.parse::<IpAddr>().is_err() => {
-                let ips = super::network::lookup_absolute(&host)
-                    .await
-                    .map_err(Error::Connect)?;
-                let addresses: Vec<SocketAddr> = ips
-                    .into_iter()
-                    .map(|ip| SocketAddr::new(ip, port))
-                    .collect();
-                TcpStream::connect(&addresses[..]).await
-            }
-            None => TcpStream::connect(&origin).await,
-        }
-        .map_err(Error::Connect)?;
-        let stream: Box<dyn Stream> = match &proxy {
+        let stream = connector.connect().await?;
+        let stream: Box<dyn Stream> = match &connector.proxy {
             Some(proxy) if use_tls => Box::new(tunnel(stream, &origin, proxy).await?),
             _ => Box::new(stream),
         };
         if !use_tls {
             return Ok::<_, Error>(stream);
         }
-        let name = host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<IpAddr>()
-            .map(rustls::pki_types::ServerName::from)
-            .or_else(|_| rustls::pki_types::ServerName::try_from(host.clone()))
-            .map_err(|_| Error::HttpRequestUriInvalid)?;
+        let name = match &connector.origin.host {
+            Host::Address(ip) => rustls::pki_types::ServerName::from(*ip),
+            Host::Name(name) => rustls::pki_types::ServerName::try_from(name.clone())
+                .map_err(|_| Error::HttpRequestUriInvalid)?,
+        };
         let stream = tokio_rustls::TlsConnector::from(tls)
             .connect(name, stream)
             .await
@@ -310,7 +422,7 @@ async fn send(
     .await
     .map_err(|_| Error::ConnectionTimeout)??;
 
-    match &proxy {
+    match &connector.proxy {
         // A proxy forwarding plain HTTP gets the absolute URL, and the credentials.
         Some(proxy) if !use_tls => {
             if let Some(authorization) = &proxy.authorization {
@@ -462,7 +574,7 @@ mod tests {
 
     fn route(proxies: &Proxies, url: &str) -> Option<String> {
         proxies
-            .for_uri(&url.parse().unwrap())
+            .for_origin(&Origin::of(&url.parse().unwrap()).ok()?)
             .map(|proxy| proxy.authority.clone())
     }
 
@@ -474,7 +586,7 @@ mod tests {
             ("https_proxy", "tls.example"),
             (
                 "NO_PROXY",
-                "internal.example, .corp.example,10.0.0.1,rooted.example.",
+                "internal.example, .corp.example,10.0.0.1,rooted.example.,[2001:db8:0:0::1]",
             ),
         ])
         .unwrap()
@@ -497,10 +609,97 @@ mod tests {
             "http://localhost:4000/",
             "http://127.0.0.1/",
             "http://[::1]/",
+            "http://127.0.0.1./",
+            "http://[2001:db8::1]/",
+            "http://[2001:0db8:0000::0001]/",
         ] {
             assert_eq!(route(&p, direct), None, "{direct}");
         }
         assert!(route(&p, "https://notcorp.example/").is_some());
+    }
+
+    /// Where a connection for `url` goes: the peer address, or the error.
+    async fn peer(hooks: &HttpHooks, url: &str) -> Result<SocketAddr, Error> {
+        let connector = Connector::new(hooks, Origin::of(&url.parse().unwrap())?);
+        Ok(connector.connect().await?.peer_addr().unwrap())
+    }
+
+    #[tokio::test]
+    async fn connections_follow_the_allowlist() {
+        let bind = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (origin, proxy) = (bind(), bind());
+        let (origin, proxy) = (origin.local_addr().unwrap(), proxy.local_addr().unwrap());
+        let hooks = |rules: &[&str]| HttpHooks {
+            rules: NetworkRules::new(rules.iter().map(|rule| rule.parse().unwrap())),
+            proxies: proxies(&[("HTTP_PROXY", &format!("http://{proxy}"))]).unwrap(),
+            ..HttpHooks::default()
+        };
+        let mixed = hooks(&["127.0.0.1", "api.example", "public"]);
+        // Loopback is reached directly.
+        assert_eq!(
+            peer(&mixed, &format!("http://{origin}/")).await.unwrap(),
+            origin
+        );
+        // A listed name, and a literal address an address rule allows, may go
+        // through the proxy.
+        assert_eq!(peer(&mixed, "http://api.example/").await.unwrap(), proxy);
+        assert_eq!(peer(&mixed, "http://1.1.1.1/").await.unwrap(), proxy);
+        // A name that only an address rule could allow isn't resolved by a proxy.
+        assert!(matches!(
+            peer(&mixed, "http://other.example/").await,
+            Err(Error::HttpRequestDenied)
+        ));
+        assert!(matches!(
+            peer(&mixed, "http://10.0.0.1/").await,
+            Err(Error::HttpRequestDenied)
+        ));
+        // With a root dot, an address is a host name: an address rule can
+        // allow it only once the launcher resolves it, so the proxy never
+        // receives it.
+        assert!(matches!(
+            peer(&hooks(&["10.0.0.0/8"]), "http://10.0.0.1./").await,
+            Err(Error::HttpRequestDenied)
+        ));
+        assert!(matches!(
+            peer(&hooks(&["api.example"]), "http://other.example/").await,
+            Err(Error::HttpRequestDenied)
+        ));
+        // Tokio would connect to a zone index unchecked.
+        assert!(matches!(
+            peer(&mixed, "http://[fe80::1%251]/").await,
+            Err(Error::HttpRequestUriInvalid)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dialing_skips_answers_the_rules_dont_allow() {
+        let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = v4.local_addr().unwrap().port();
+        // Without IPv6 loopback there is no second reachable address to test.
+        let Ok(_v6) = std::net::TcpListener::bind(("::1", port)) else {
+            return;
+        };
+        let rules = NetworkRules::new(["127.0.0.1".parse().unwrap()]).unwrap();
+        let answers = || {
+            vec![
+                IpAddr::from(Ipv6Addr::LOCALHOST),
+                Ipv4Addr::LOCALHOST.into(),
+            ]
+        };
+        let peer = |stream: TcpStream| stream.peer_addr().unwrap().ip();
+        // The first answer wins unless the rules filter it out.
+        assert_eq!(
+            peer(dial(answers(), port, None).await.unwrap()),
+            Ipv6Addr::LOCALHOST
+        );
+        assert_eq!(
+            peer(dial(answers(), port, Some(&rules)).await.unwrap()),
+            Ipv4Addr::LOCALHOST
+        );
+        assert!(matches!(
+            dial(vec![Ipv6Addr::LOCALHOST.into()], port, Some(&rules)).await,
+            Err(Error::DestinationIpProhibited)
+        ));
     }
 
     /// Reads an HTTP head, through the blank line.
