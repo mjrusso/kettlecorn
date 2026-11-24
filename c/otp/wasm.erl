@@ -25,7 +25,7 @@
 %% on_load/0 is called explicitly from erl_init:start/2; do NOT use the
 %% -on_load attribute (a preloaded module with one aborts the VM at boot).
 -export([getaddrinfo/2, http_available/0, http_send/8, http_read/2, http_close/1]).
--export([on_load/0, send/1, host_call/3]).
+-export([on_load/0, send/1]).
 -export([send_raw/1, send_envelope/1]).
 -export([reduction_budget/1, attach_reduction_budget/1, close_reduction_budget/1]).
 
@@ -33,28 +33,9 @@
         http_available/0, http_send/8, http_read/2, http_close/1,
         reduction_budget/1, attach_reduction_budget/1, close_reduction_budget/1]).
 
--define(HOST_CALL_TIMEOUT, 5000).
-
 -spec send(term()) -> ok | {error, frame_too_large}.
 send(Message) ->
     send_envelope(#{type => vm_message, data => Message}).
-
--spec host_call(binary(), map(), proplists:proplist()) -> {ok, term()} | {error, term()}.
-host_call(Name, Args, Opts) when is_binary(Name), is_map(Args), is_list(Opts) ->
-    Timeout = proplists:get_value(timeout, Opts, ?HOST_CALL_TIMEOUT),
-    Token = erlang:unique_integer(),
-    ReplyTo = term_to_binary({self(), Token}),
-    Envelope = #{type => host_call, name => Name, args => Args,
-                 reply_to => ReplyTo},
-    case send_envelope(Envelope) of
-        ok ->
-            receive
-                {wasm, {Token, Payload}} -> Payload
-            after Timeout ->
-                {error, timeout}
-            end;
-        {error, frame_too_large} = Error -> Error
-    end.
 
 -spec send_envelope(map()) -> ok | {error, frame_too_large}.
 send_envelope(Envelope) ->
