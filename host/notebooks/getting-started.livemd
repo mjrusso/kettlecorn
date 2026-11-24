@@ -156,11 +156,10 @@ stops. Halting the guest stops its VM:
   Kettlecorn.run("System.halt(0)", max_fuel: 50_000_000_000, max_lifetime: 10_000)
 ```
 
-`network: true` and `http: true` grant sockets and `wasi:http`. They're all
-or nothing: Kettlecorn has no host allowlist, so a VM with a grant can
-reach anything the machine can. The
-[network notebook](network.livemd#compare-network-grants)
-shows both.
+`network: true` grants sockets and `http: true` grants WASI HTTP to any
+reachable destination. Set either grant to `[allow: rules]` to limit its
+destinations. The [network notebook](network.livemd#compare-network-grants)
+shows both grants and an allowlist.
 
 ## Limits
 

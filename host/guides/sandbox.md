@@ -14,8 +14,8 @@ Wasmtime enforces these limits and grants:
 | `max_memory: bytes` | `max_memory: Some(bytes)` | `--max-memory` | WebAssembly linear memory limit |
 | `max_lifetime: ms` | `max_lifetime: Some(duration)` | `--timeout 2s` | Epoch interruption and a deadline |
 | `max_fuel: n` | `max_fuel: Some(n)` | `--fuel` | Execution budget, roughly WebAssembly instructions |
-| `network: true` | `network: true` | `--network` | Socket and DNS permissions |
-| `http: true` | `http: true` | `--http` | HTTP linker, runs `beam-http.wasm` |
+| `network: true` | `network: NetworkAccess::Any` | `--network` | Socket and DNS permissions |
+| `http: true` | `http: NetworkAccess::Any` | `--http` | HTTP linker, runs `beam-http.wasm` |
 
 Both APIs default to a 512 MiB WebAssembly memory limit. Fuel and lifetime
 limits default to `:infinity` in Elixir and `None` in Rust. Rust durations
@@ -216,18 +216,122 @@ directory on a size-limited filesystem when disk use must be bounded.
 ## Network grants
 
 Without either grant, socket and DNS operations are denied and
-`Kettlecorn.HTTP` is unavailable. **The grants allow any reachable destination:**
-Kettlecorn has no destination allowlist, so a granted VM can reach internal
-services, `127.0.0.1`, and cloud metadata endpoints. Expose selected operations
-as host calls through `Kettlecorn.Host.call/3`. An Elixir host answers them
-with `:handlers`, a `:handler` or its owner (see
+`Kettlecorn.HTTP` is unavailable. **`network: true` and `http: true` allow any
+reachable destination,** including internal services, `127.0.0.1`, and cloud
+metadata endpoints. `[allow: [:public]]` (`--network-allow public` and
+`--http-allow public` for `kettlecorn-run`; a `public` rule in Rust) allows
+public addresses only, which excludes loopback, private, link-local
+(including the `169.254.169.254` metadata address), and other
+special-purpose ranges. It classifies addresses, not routes: if the host's
+network routes a public address to an internal service, `public` allows it.
+Use an [allowlist](#network-allowlists) to limit access further, or expose
+selected operations as host calls through `Kettlecorn.Host.call/3`. An
+Elixir host answers them with `:handlers`, a `:handler` or its owner (see
 [host calls](guest-api.md#host-calls)); a Rust host uses functions
 registered with `VmOptions::register`. OS-level network confinement applies to the launcher
 for Elixir/CLI VMs and to the application process for embedded Rust VMs.
 
+### Network allowlists
+
+`network: [allow: rules]` and `http: [allow: rules]` grant access to the listed
+destinations only (`NetworkAccess::Only` in Rust; `--network-allow RULE` and
+`--http-allow RULE`, repeated, for `kettlecorn-run`). Write each rule as a
+string, or use `:public` in Elixir.
+
+| Rule | Allows |
+|---|---|
+| `api.example.com` | that host name |
+| `*.example.com` | its subdomains, not `example.com` itself |
+| `10.1.2.3`, `10.0.0.0/8` | an IPv4 address or range |
+| `[fd00::1]`, `[fd00::/8]` | an IPv6 address or range |
+| `public` (`:public` in Elixir) | any public address |
+
+Add `:port` to allow one port, for example `api.example.com:443` or
+`public:443`. An allowlist must have at least one rule. Rules are case
+insensitive. An IPv4-mapped IPv6 rule, such as `[::ffff:10.0.0.1]`, means
+the IPv4 address, which is how mapped destinations are matched.
+
+`public` is an IPv4 address outside the loopback, private, link-local,
+shared, documentation, benchmarking, multicast, and reserved ranges, or an
+IPv6 address in `2000::/3` outside the IETF protocol assignment
+(`2001::/23`), documentation, and 6to4 ranges. The IPv6 check is by prefix,
+not by allocation: unallocated and IANA-reserved space inside `2000::/3`,
+such as `3000::/4`, counts as public. An address in the NAT64 prefix
+`64:ff9b::/96` is judged by its embedded IPv4 address; other IPv6 space,
+including the local-use translation prefix, isn't public. This classifies
+addresses: the host's network decides where an address routes.
+
+With a sockets allowlist, the guest's name lookups resolve only names that a
+rule lists, or any name with `public`. Names are looked up as absolute names,
+first in `/etc/hosts`, then through the host's resolver. The host's search
+domains don't apply, so a rule for `db` allows `db.`, not
+`db.corp.example`. To reach a service by a name the search domains would
+complete, list its full name. A hostname lookup returns only addresses
+permitted by the rules or recorded for that name's allowed ports. It fails
+if none qualify. The launcher returns a literal address unchanged and
+checks access when the guest uses the socket. A connection or UDP datagram is
+allowed when an address rule matches its destination, or when a lookup of a
+listed name returned that address, on the port that name's rule allows. The
+check uses the address actually connected to, so a listed name that resolves
+to a private address reaches it, and `public` refuses it.
+
+A VM retains up to 4,096 address and port pairs from lookups for its lifetime. An
+address allowed on every port counts once, and a port that an address rule
+already allows isn't recorded. A pair that would exceed the limit isn't
+recorded, so the name gives it no permission. The lookup still returns an
+address recorded for one of the name's ports, or one that an address rule,
+such as `public`, allows. The
+guest can't listen for or accept connections. A denied connection or name lookup fails
+with `:eacces`. The guest's own host name, `localhost`, still resolves to
+`127.0.0.1` inside the guest, without a lookup; connecting to it needs a rule.
+
+The HTTP launcher checks the URL host and port before sending each request.
+
+| URL host | What permits the request | Proxy use |
+|---|---|---|
+| Literal IP address | An address rule matches the IP and port. | Uses the configured proxy if one applies. |
+| Hostname that matches a name rule | The name rule matches the host and port. The rule trusts the name's resolution, including private results. | Uses the configured proxy if one applies. |
+| Other hostname | The launcher resolves the name and connects only to IP addresses permitted by an address rule on that port. | Requires a direct connection. |
+
+For a direct connection with an allowlist, the launcher resolves hostnames
+as absolute names. A proxy resolves names itself. A hostname that needs
+an address rule is denied if a proxy applies. Add it to `NO_PROXY` to
+select a direct connection that still checks the resolved addresses.
+
+A request without a matching rule fails with `:http_request_denied`. If a
+direct lookup returns addresses and the address rules exclude all of them,
+the request fails with `:destination_ip_prohibited`. IPv6 URL hosts with
+a zone index, such as `[fe80::1%25eth0]`, fail with
+`:http_request_uri_invalid`, including without an allowlist. When a client
+follows a redirect, the new request is checked again.
+
+### Proxies
+
+**HTTP grant.** The launcher sends guest HTTP requests through the proxy in
+its environment, read when the VM starts: `http_proxy` or `HTTP_PROXY` for
+`http://` URLs, `https_proxy` or `HTTPS_PROXY` for `https://` URLs, and
+`no_proxy` or `NO_PROXY` for hosts to reach directly (comma-separated host
+names, domains such as `.example.com`, addresses, which match any spelling
+of the same address, or `*`). Loopback hosts
+are always reached directly. An Elixir host's launcher inherits the BEAM's
+environment, and an embedded Rust VM reads its process's. Proxies must be
+`http://` URLs; credentials in the URL (`http://user:password@proxy:3128`)
+are sent as `Proxy-Authorization`. For HTTPS, the launcher opens a
+`CONNECT` tunnel and verifies the origin's TLS certificate through it. See
+[network allowlists](#network-allowlists) for requests that require a direct
+connection.
+
+**Network grant.** The guest doesn't inherit the host's environment, and
+its HTTP clients don't read proxy variables. Configure the proxy in guest
+code, for example with Req's `connect_options: [proxy: {:http,
+"proxy.internal", 3128, []}]`, or `:httpc.set_options/1`, and pass its
+address in with the `:env` option if it varies. With an allowlist, list the
+proxy (`proxy.internal:3128`); the allowlist then sees only the proxy, so
+the proxy must enforce any per-destination policy.
+
 See [HTTP and Req](running-applications.md#http-and-req) for how the grants
 select Req's adapter, and which CA certificates each uses. With the Elixir
-API's `network: true`, the guest gets a copy of the host's CA certificates
+API's sockets grant, the guest gets a copy of the host's CA certificates
 unless `:cacerts` says otherwise. They're public, but they tell the guest
 which private CAs the host trusts.
 

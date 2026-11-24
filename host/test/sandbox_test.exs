@@ -48,6 +48,20 @@ defmodule Kettlecorn.SandboxTest do
     on_exit(fn -> Sandbox.Instance.cleanup(instance) end)
     joined = instance |> Sandbox.Instance.command() |> Enum.join(" ")
     assert joined =~ "--network --http"
+
+    instance =
+      Sandbox.new(
+        runtime: runtime,
+        network: [allow: ["api.example.com:443", :public]],
+        http: [allow: ["10.0.0.0/8"]]
+      )
+      |> Sandbox.Instance.prepare()
+
+    on_exit(fn -> Sandbox.Instance.cleanup(instance) end)
+    joined = instance |> Sandbox.Instance.command() |> Enum.join(" ")
+
+    assert joined =~
+             "--network-allow api.example.com:443 --network-allow public --http-allow 10.0.0.0/8"
   end
 
   test "rejects unknown options, and invalid ones for the VM", %{runtime: runtime} do

@@ -163,10 +163,13 @@ for frame limits and oversized-reply behavior.
 
 Start a VM with `http: true` in Elixir, set `VmOptions::http` to
 `NetworkAccess::Any` in Rust, or use `kettlecorn-run --http`, to enable
-`Kettlecorn.HTTP`. Requests go through `wasi:http`. Kettlecorn's HTTP
-sender verifies TLS with the bundled Mozilla root certificates and uses
-the proxy settings in the host process's environment. The `:cacerts`
-option applies to the sockets grant.
+`Kettlecorn.HTTP` for any reachable destination. Use
+[network allowlists](sandbox.md#network-allowlists) to restrict destinations.
+
+Requests go through `wasi:http`. Kettlecorn's HTTP sender verifies TLS
+with the bundled Mozilla root certificates and uses the
+[proxy settings](sandbox.md#proxies) in the host process's environment.
+The `:cacerts` option applies to the sockets grant.
 
 `Kettlecorn.HTTP.available?()` returns whether HTTP is enabled.
 
@@ -230,8 +233,8 @@ end)
 
 ## Req adapter
 
-Req ships in the runtime. With `http: true`, the guest installs
-`Kettlecorn.HTTP.ReqAdapter` as Req's default adapter:
+Req ships in the runtime. Whenever the VM has the HTTP grant, the guest
+installs `Kettlecorn.HTTP.ReqAdapter` as Req's default adapter.
 
 ```elixir
 Req.get!("https://example.com/").body

@@ -138,6 +138,95 @@ defmodule Kettlecorn.CapabilitiesTest do
     end
   end
 
+  describe "network allowlists" do
+    test "sockets reach only the listed addresses and ports" do
+      [allowed, other] = [start_listener(), start_listener()]
+      vm = start_vm(network: [allow: ["127.0.0.1:#{allowed}"]])
+
+      code = """
+      connect = fn port -> :gen_tcp.connect({127, 0, 0, 1}, port, [], 5000) end
+      {elem(connect.(#{allowed}), 0), connect.(#{other})}
+      """
+
+      assert {:ok, %{"value" => {:ok, {:error, :eacces}}}} = Kettlecorn.eval(vm, code)
+    end
+
+    test "host-name rules limit name lookups to listed names, and connections to their addresses" do
+      [allowed, other] = [start_listener(), start_listener()]
+      vm = start_vm(network: [allow: ["localhost:#{allowed}"]])
+
+      # The address is reachable once a lookup of the listed name returns it,
+      # and only on the rule's port.
+      code = """
+      before = :gen_tcp.connect({127, 0, 0, 1}, #{allowed}, [], 5000)
+      {:ok, _} = :gen_tcp.connect(~c"localhost", #{allowed}, [], 5000)
+      {before, :gen_tcp.connect(~c"localhost", #{other}, [], 5000)}
+      """
+
+      assert {:ok, %{"value" => {{:error, :eacces}, {:error, :eacces}}}} =
+               Kettlecorn.eval(vm, code)
+
+      # The launcher resolves localhost, but no rule lists it. (:inet.getaddr/2
+      # would still answer: the guest's own host name is localhost.)
+      vm = start_vm(network: [allow: ["127.0.0.1"]])
+      lookup = ~S|:inet_gethost_native.gethostbyname(~c"localhost", :inet)|
+      assert {:ok, %{"value" => {:error, :eacces}}} = Kettlecorn.eval(vm, lookup)
+    end
+
+    test ":public resolves any name but doesn't reach loopback" do
+      port = start_listener()
+      vm = start_vm(network: [allow: [:public]])
+
+      code = """
+      {:inet.getaddr(~c"localhost", :inet), :gen_tcp.connect({127, 0, 0, 1}, #{port}, [], 5000)}
+      """
+
+      assert {:ok, %{"value" => {{:ok, {127, 0, 0, 1}}, {:error, :eacces}}}} =
+               Kettlecorn.eval(vm, code)
+    end
+
+    test "HTTP reaches only the listed addresses and ports, by URL or resolved name" do
+      [allowed, other] = [start_http_server(), start_http_server()]
+      vm = start_vm(http: [allow: ["127.0.0.1:#{allowed}"]])
+
+      code = """
+      get = fn url -> Kettlecorn.HTTP.request(:get, url) end
+      {get.("http://127.0.0.1:#{allowed}/echo"), get.("http://localhost:#{allowed}/echo"),
+       get.("http://127.0.0.1:#{other}/echo")}
+      """
+
+      assert {:ok, %{"value" => {{:ok, %{status: 201}}, {:ok, %{status: 201}}, {:error, denied}}}} =
+               Kettlecorn.eval(vm, code)
+
+      assert inspect(denied) =~ "denied"
+    end
+
+    test ":public HTTP reaches no loopback address, by URL or resolved name" do
+      port = start_http_server()
+      vm = start_vm(http: [allow: [:public]])
+
+      code = """
+      get = fn url -> Kettlecorn.HTTP.request(:get, url) end
+      {get.("http://127.0.0.1:#{port}/echo"), get.("http://localhost:#{port}/echo")}
+      """
+
+      assert {:ok,
+              %{"value" => {{:error, :http_request_denied}, {:error, :destination_ip_prohibited}}}} =
+               Kettlecorn.eval(vm, code)
+    end
+
+    test "allowlists are checked when the VM starts" do
+      assert_raise ArgumentError, fn ->
+        Kettlecorn.start(TestRuntime.opts(network: [allow: []]))
+      end
+
+      for opts <- [[network: [allow: ["not a rule"]]], [http: [allow: ["not a rule"]]]] do
+        assert {:error, reason} = Kettlecorn.start(TestRuntime.opts(opts))
+        assert inspect(reason) =~ "invalid network rule"
+      end
+    end
+  end
+
   describe "CA certificates" do
     test "network: true passes the host's by default" do
       host =
@@ -669,6 +758,23 @@ defmodule Kettlecorn.CapabilitiesTest do
   # A minimal HTTP/1.1 server: answers "<method> <path> <x-test> <body>", or
   # 300 kB for /big, then closes the connection. /truncated and /slow
   # misbehave (see serve/2).
+  # Accepts connections and keeps them open.
+  defp start_listener do
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false, reuseaddr: true])
+
+    {:ok, port} = :inet.port(listener)
+    spawn_link(fn -> accept_and_hold(listener, []) end)
+    port
+  end
+
+  defp accept_and_hold(listener, held) do
+    case :gen_tcp.accept(listener) do
+      {:ok, socket} -> accept_and_hold(listener, [socket | held])
+      {:error, _} -> :ok
+    end
+  end
+
   defp start_http_server do
     {:ok, listener} =
       :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false, reuseaddr: true])

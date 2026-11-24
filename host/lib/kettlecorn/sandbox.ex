@@ -1,6 +1,13 @@
 defmodule Kettlecorn.Sandbox do
   alias Kettlecorn.Options
 
+  @grant {:or,
+          [
+            :boolean,
+            {:keyword_list,
+             allow: [type: {:list, {:or, [:string, {:in, [:public]}]}}, required: true]}
+          ]}
+
   @options_schema NimbleOptions.new!(
                     max_memory: [
                       type: :pos_integer,
@@ -25,11 +32,14 @@ defmodule Kettlecorn.Sandbox do
                       """
                     ],
                     network: [
-                      type: :boolean,
+                      type: @grant,
+                      type_doc: "`boolean()` or `[allow: rules]`",
                       default: false,
                       doc: """
-                      Allows TCP/UDP sockets and DNS. **This allows any destination**, including internal
-                      addresses; Kettlecorn has no host or port allowlist.
+                      Allows TCP/UDP sockets and DNS. `true` **allows any destination**, including
+                      loopback, internal, and cloud metadata addresses. `[allow: rules]` allows only
+                      the destinations the rules list; `[allow: [:public]]` allows public addresses
+                      only. See [network allowlists](sandbox.html#network-allowlists).
                       """
                     ],
                     cacerts: [
@@ -37,20 +47,23 @@ defmodule Kettlecorn.Sandbox do
                       type_doc: "`:host`, a PEM file path, or a list of DER certificates",
                       default: :host,
                       doc: """
-                      The CA certificates the guest trusts with `network: true`: `:public_key.cacerts_get/0`
-                      in the guest returns them, and Req uses them. `:host` passes the host's, and a PEM file
-                      or a list of DER certificates replaces them. With `[]`, or `:host` without a host trust
-                      store, `:public_key.cacerts_get/0` and Req HTTPS requests without their own `:cacerts`
-                      raise in the guest. With `http: true`, Wasmtime uses its compiled Mozilla root CA list;
-                      this option does not change those roots.
+                      CA certificates for the sockets grant. `:public_key.cacerts_get/0` in the guest
+                      returns them, and Req uses them for HTTPS over sockets. `:host` passes the host's
+                      certificates. A PEM file or a list of DER certificates replaces them. With `[]`, or
+                      `:host` without a host trust store, `:public_key.cacerts_get/0` and Req HTTPS requests
+                      over sockets without their own `:cacerts` raise in the guest. The HTTP grant uses
+                      the bundled Mozilla root CA list regardless of this option.
                       """
                     ],
                     http: [
-                      type: :boolean,
+                      type: @grant,
+                      type_doc: "`boolean()` or `[allow: rules]`",
                       default: false,
                       doc: """
                       Allows `Kettlecorn.HTTP` requests through `wasi:http` with `beam-http.wasm`.
-                      Req uses `Kettlecorn.HTTP.ReqAdapter`. Allows any destination.
+                      Req uses `Kettlecorn.HTTP.ReqAdapter`. `true` allows any destination;
+                      `[allow: rules]` allows only the destinations the rules list: see
+                      [network allowlists](sandbox.html#network-allowlists).
                       """
                     ],
                     schedulers: [
@@ -175,6 +188,8 @@ defmodule Kettlecorn.Sandbox do
   @enforce_keys Keyword.keys(@options_schema.schema)
   defstruct @enforce_keys
 
+  @type grant :: boolean() | [allow: [String.t() | :public]]
+
   @type t :: %__MODULE__{
           runtime: Kettlecorn.Runtime.t(),
           app: Path.t() | nil,
@@ -182,8 +197,8 @@ defmodule Kettlecorn.Sandbox do
           max_memory: pos_integer(),
           max_lifetime: pos_integer() | :infinity,
           max_fuel: pos_integer() | :infinity,
-          network: boolean(),
-          http: boolean(),
+          network: grant(),
+          http: grant(),
           cacerts: [:public_key.der_encoded()],
           schedulers: pos_integer(),
           code_paths: [Path.t()],
@@ -202,6 +217,10 @@ defmodule Kettlecorn.Sandbox do
   @spec new(keyword()) :: t()
   def new(opts) do
     opts = Options.validate!(opts, @options_schema)
+
+    for grant <- [:network, :http],
+        opts[grant] == [allow: []],
+        do: raise(ArgumentError, "#{inspect(grant)}: an allowlist needs at least one rule")
 
     runtime =
       case Kettlecorn.Runtime.find(opts) do

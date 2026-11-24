@@ -34,6 +34,11 @@
 * `mix kettlecorn.install --archive PATH` (`Kettlecorn.Install.runtime/1`'s
   `:archive`) installs a release archive already on disk, verified against
   the same checksum as a download, for hosts without network access.
+* `network: [allow: rules]` and `http: [allow: rules]` limit the grants to
+  the listed host names, addresses, address ranges and ports; `:public`
+  allows public addresses. For HTTP, hostname requests allowed by resolved
+  address require a direct connection. `kettlecorn-run` takes
+  `--network-allow` and `--http-allow`.
 * Remove VM private directories faster on shutdown and log cleanup failures.
 
 ## 0.2.0

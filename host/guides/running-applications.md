@@ -110,9 +110,12 @@ kettlecorn-run --max-memory 536870912 --fuel 50000000000 --timeout 30s script.ex
 `--preload strict` loads modules at boot and exits with status 1 if a
 module later loads on demand. See [preloading modules](sandbox.md#preloading-modules).
 
-Network and HTTP grants default to off. Each grant allows any reachable
-destination. See [sandbox and resource limits](sandbox.md) and
-[HTTP and Req](#http-and-req) for grant and certificate behavior.
+Network and HTTP grants default to off. `--network` and `--http` allow any
+reachable destination; `--network-allow RULE` and `--http-allow RULE`,
+repeated, allow only the listed ones (see
+[network allowlists](sandbox.md#network-allowlists)). See
+[sandbox and resource limits](sandbox.md) and [HTTP and Req](#http-and-req)
+for grant and certificate behavior.
 
 For debugging with the Wasmtime CLI, see the development guide's
 [equivalent-command instructions](development.md#native-launcher).
@@ -370,11 +373,12 @@ Req ships in the guest. Its default adapter depends on the grants:
 
 | VM started with | `Req.get!/2` goes through |
 |---|---|
-| `http: true`, with or without `network: true` | `Kettlecorn.HTTP.ReqAdapter` over `wasi:http` |
-| `network: true` only | Req's usual Finch/Mint, over `wasi:sockets` |
+| HTTP grant enabled | `Kettlecorn.HTTP.ReqAdapter` over `wasi:http` |
+| Only the sockets grant enabled | Req's usual Finch/Mint, over `wasi:sockets` |
 | neither | A rejecting adapter that returns `Kettlecorn.NetworkDisabledError` |
 
-Use `http: true` for HTTP access without granting raw sockets.
+Either grant accepts `true` or `[allow: rules]`. For HTTP without raw
+sockets, enable only the HTTP grant.
 Explicit adapters in Req's default options or individual requests override
 this selection.
 
@@ -403,12 +407,12 @@ roots to the guest.
 Kettlecorn.stop(vm)
 ```
 
-`kettlecorn-run --network` passes `$SSL_CERT_FILE`, else the host's
-bundle from a standard location, unless `--cacertfile FILE` names
+`kettlecorn-run --network` and `--network-allow RULE` pass `$SSL_CERT_FILE`,
+else the host's bundle from a standard location, unless `--cacertfile FILE` names
 another. In the guest, `:public_key.cacerts_get/0` returns them, and
 Req and Mint use them unless a request passes its own.
 
-With `network: true`, the guest has no CA certificates if `cacerts: []` or
+With the sockets grant, the guest has no CA certificates if `cacerts: []` or
 the host has no trust store. `:public_key.cacerts_get/0` raises, and so does a Req HTTPS
 request that doesn't pass `connect_options: [transport_opts: [cacerts: ...]]`.
 

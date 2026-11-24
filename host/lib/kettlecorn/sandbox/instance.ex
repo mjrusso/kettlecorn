@@ -111,8 +111,8 @@ defmodule Kettlecorn.Sandbox.Instance do
       ],
       timeout,
       fuel,
-      if(s.network, do: ["--network"], else: []),
-      if(s.http, do: ["--http"], else: []),
+      grant_args(s.network, "--network"),
+      grant_args(s.http, "--http"),
       if(s.compile_cache, do: [], else: ["--no-cache"]),
       if(s.cache_dir, do: ["--cache-dir", Path.expand(s.cache_dir)], else: []),
       env,
@@ -122,6 +122,13 @@ defmodule Kettlecorn.Sandbox.Instance do
       Enum.flat_map(s.emulator_flags, fn flag -> ["--emulator-arg", flag] end)
     ])
   end
+
+  # The launcher parses and checks the rules.
+  defp grant_args(false, _flag), do: []
+  defp grant_args(true, flag), do: [flag]
+
+  defp grant_args([allow: rules], flag),
+    do: Enum.flat_map(rules, &[flag <> "-allow", to_string(&1)])
 
   defp preload_args(false), do: []
   defp preload_args(true), do: ["--preload", "on"]

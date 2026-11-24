@@ -27,7 +27,9 @@ Choose a grant for the connections the guest needs.
   `Kettlecorn.HTTP.ReqAdapter` as Req's default adapter.
 
 Use `true` to allow any reachable destination, including services on
-`localhost`. This notebook starts a local HTTP server on `127.0.0.1`.
+`localhost`. Use `[allow: rules]` to limit the grant to
+[listed destinations](../guides/sandbox.md#network-allowlists). This
+notebook starts a local HTTP server on `127.0.0.1`.
 
 ```elixir
 {:ok, listener} =
@@ -137,7 +139,21 @@ for {grant, expected_result} <- expected do
 end
 ```
 
+## Limit HTTP destinations
+
+Allow the local test server by IP address and port. The `:public` rule
+allows public addresses and denies this loopback URL.
+
 ```elixir
+http_get = ~s<Kettlecorn.HTTP.request(:get, "#{url}")>
+limits = [max_fuel: 100_000_000_000, max_lifetime: 30_000, timeout: 10_000]
+
+{:ok, %{"value" => {:ok, %{status: 200}}}} =
+  Kettlecorn.run(http_get, [http: [allow: ["127.0.0.1:#{port}"]]] ++ limits)
+
+{:ok, %{"value" => {:error, :http_request_denied}}} =
+  Kettlecorn.run(http_get, [http: [allow: [:public]]] ++ limits)
+
 :gen_tcp.close(listener)
 ```
 
