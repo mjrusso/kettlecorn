@@ -6,7 +6,7 @@ defmodule Kettlecorn.MixProject do
   # it's the runtime's version.
   @version "VERSION" |> File.read!() |> String.trim()
   @source_url "https://github.com/mjrusso/kettlecorn"
-  @notebooks ~w(notebooks/getting-started.livemd notebooks/working-with-guests.livemd notebooks/use-cases.livemd notebooks/network.livemd notebooks/guest-data.livemd notebooks/lua.livemd notebooks/internals.livemd)
+  @notebooks ~w(notebooks/getting-started.livemd notebooks/working-with-guests.livemd notebooks/use-cases.livemd notebooks/network.livemd notebooks/guest-data.livemd notebooks/internals.livemd)
   @user_guides ~w(guides/sandbox.md guides/running-applications.md guides/guest-api.md)
   @contributor_guides ~w(guides/architecture.md guides/development.md guides/performance.md)
   @guides @user_guides ++ @contributor_guides
@@ -61,7 +61,6 @@ defmodule Kettlecorn.MixProject do
   defp deps do
     [
       {:nimble_options, "~> 1.2"},
-      {:lua, "1.0.2", only: [:dev, :test]},
       {:stream_data, "~> 1.2", only: :test},
       {:benchee, "~> 1.3", only: :bench},
       {:credo, "~> 1.7.19", only: :dev, runtime: false},

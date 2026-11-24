@@ -268,6 +268,34 @@ follow the same earlier evaluations on a fresh VM, or use `preload: true`.
 Wall-clock timeouts and external state can also affect how much work
 completes.
 
+## Controlled inputs
+
+To replay a run, start a fresh VM with the same code, runtime version, and
+configuration. Record the requests, their order, and the replies to
+guest host calls. Include any other input the program reads. Earlier
+requests can change the state that later requests see.
+
+Read the clock on the host and record the value with the request or
+reply. For random draws, record a seed and pass it to the guest. Use
+`:rand`'s explicit-state functions to carry the generator state between draws:
+
+```elixir
+{:ok, seed} = Kettlecorn.Host.call("seed")
+{roll, state} = :rand.uniform_s(6, :rand.seed_s(:exsss, seed))
+```
+
+Send the recorded requests in order. At each host call, compare its name
+and arguments with the next recorded call before returning the recorded
+reply. At the end, check that every reply was used and compare the
+results. Wall-clock timers and inputs collected inside the guest can
+change a replay. The
+[Dune example](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#appsdune)
+restricts selected clock and random functions and draws from a supplied
+seed. Its example documentation also describes the cost of Dune's
+reduction polling. The
+[Lua example](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#appslua)
+takes the receipt time and code in each request.
+
 ## Process isolation
 
 ### Elixir host and CLI

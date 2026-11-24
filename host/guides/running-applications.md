@@ -215,8 +215,9 @@ run with `just example counter`, `just example csv_stats -e 'CsvStats.report()'`
 `just example lua`, and `just example dune` inside `nix develop`. These
 recipes build with Mix and write cooked apps under `_kettlecorn/examples/`.
 
-The [Lua notebook](../notebooks/lua.livemd) shows how to load a compiled
-dependency directly with `code_paths`.
+To use a compiled dependency without cooking an app, pass its `ebin`
+directories in `:code_paths`; the VM copies them into the guest and adds
+them to its code path.
 
 ### Bundle layout and configuration
 

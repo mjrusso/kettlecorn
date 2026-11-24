@@ -168,8 +168,8 @@ and instructions for these Rust projects:
 | [Performance](host/guides/performance.md) | Startup behavior and local benchmark instructions |
 
 The [internals notebook](host/notebooks/internals.livemd) examines the
-implementation. The [Lua notebook](host/notebooks/lua.livemd) compares
-embedding Lua in the host BEAM with running it inside Kettlecorn.
+implementation. The [cooked Lua and Dune examples](examples/README.md#cooked-apps)
+show how to supply inputs from the host.
 
 ## Contributing
 

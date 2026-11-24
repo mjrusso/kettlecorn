@@ -13,7 +13,7 @@ beamPackages.mixRelease {
     pname = "${pname}-deps";
     inherit version src;
     mixEnv = "test";
-    hash = "sha256-62rQBlYDMuBzdCo8lf+JG7Z9wAj5Wp18goUqbWWKp4A=";
+    hash = "sha256-faFMVVmPFniWE/UK5VaN3i11JEG0pSU3wMrYrf0qUAI=";
   };
   nativeBuildInputs = [ unixtools.ps ];
   env = {

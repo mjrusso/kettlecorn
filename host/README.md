@@ -174,8 +174,9 @@ independent:
 * [Network access](notebooks/network.livemd): sockets, HTTP, and denied operations.
 * [Validating guest data](notebooks/guest-data.livemd): constructors and nested results.
 
-[Lua](notebooks/lua.livemd) compares host embedding with guest execution;
-[Internals](notebooks/internals.livemd) examines the implementation.
+[Internals](notebooks/internals.livemd) examines the implementation. The
+[cooked Lua and Dune examples](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#cooked-apps)
+show how to supply inputs from the host.
 See [Architecture](guides/architecture.md), [Development](guides/development.md),
 and [Performance](guides/performance.md) for implementation details and benchmarks.
 
