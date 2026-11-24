@@ -299,5 +299,5 @@ chmod -R u+w "$root"
 rm -rf "$root"
 ```
 
-The printed command is for manual debugging. It does not provide the native
-launcher's port-close cancellation.
+The printed command is for manual debugging. Port-close cancellation,
+network allowlists, and guest HTTP proxies require the native launcher.

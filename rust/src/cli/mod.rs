@@ -210,6 +210,19 @@ fn watch_port(cancel: Cancellation) -> Watcher {
     Watcher(finished)
 }
 
+/// The Wasmtime CLI has no HTTP proxies. The proxy settings are read only
+/// with the HTTP grant, as when the VM runs.
+fn check_http_proxy(
+    options: &GuestOptions,
+    http_proxy: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    anyhow::ensure!(
+        !(options.http.granted() && http_proxy()?),
+        "the Wasmtime command can't send HTTP through the proxy in this environment"
+    );
+    Ok(())
+}
+
 fn access(any: bool, rules: Vec<crate::NetworkRule>) -> NetworkAccess {
     match (any, NetworkRules::new(rules)) {
         (true, _) => NetworkAccess::Any,
@@ -263,6 +276,7 @@ async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
     }
     if args.print_wasmtime_command {
         let command = runtime.wasmtime_command(&options)?;
+        check_http_proxy(&options, crate::engine::http_proxy_configured)?;
         println!("# Wasmtime {WASMTIME_VERSION}; root must be a private writable copy");
         println!(
             "{}",
@@ -467,6 +481,18 @@ pub fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_wasmtime_command_refuses_an_http_proxy() {
+        use super::{GuestOptions, HttpAccess, NetworkAccess, check_http_proxy as check};
+        let mut options = GuestOptions::new("/root");
+        options.http = HttpAccess::try_from(NetworkAccess::Any).unwrap();
+        assert!(check(&options, || Ok(false)).is_ok());
+        assert!(check(&options, || Ok(true)).is_err());
+        // Without the grant, the proxy settings aren't read, even if invalid.
+        options.http = HttpAccess::default();
+        assert!(check(&options, || anyhow::bail!("invalid HTTP proxy")).is_ok());
+    }
+
     use super::*;
 
     #[test]

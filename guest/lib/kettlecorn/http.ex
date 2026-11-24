@@ -2,21 +2,19 @@ defmodule Kettlecorn.HTTP do
   @moduledoc """
   Outgoing HTTP from the guest, over `wasi:http/client`.
 
-  Requires the HTTP grant (`Kettlecorn.start_link(http: true)` or
-  `kettlecorn-run --http`), which runs `beam-http.wasm` and enables HTTP
-  interfaces in the embedded engine. The guest then sets
-  `Kettlecorn.HTTP.ReqAdapter` as Req's default adapter:
+  With the HTTP grant enabled, the VM runs `beam-http.wasm` and sets
+  `Kettlecorn.HTTP.ReqAdapter` as Req's default adapter.
 
       Req.get!("https://api.example.com/status").body
 
-  Without Req:
+  Use `request/3` directly to receive the status, headers, and body.
 
       {:ok, %{status: 200, headers: headers, body: body}} =
         Kettlecorn.HTTP.request(:get, "https://example.com/")
 
-  Wasmtime handles TLS using its compiled Mozilla root CA list; the host's
-  trust store and the VM's `:cacerts` option do not change it. Req handles
-  redirects and response decompression.
+  The HTTP sender verifies TLS with the bundled Mozilla root certificates.
+  The VM's `:cacerts` option configures the guest trust store for sockets.
+  Req handles redirects and response decompression.
   """
 
   @compile {:no_warn_undefined, :wasm}

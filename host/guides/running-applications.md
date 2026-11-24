@@ -385,12 +385,11 @@ TLS setup. `Req.get/2` returns `{:error, exception}` with
 default retry policy does not retry it. The message explains how to enable
 access with `--http` / `http: true` or `--network` / `network: true`.
 
-With `http: true`, Wasmtime verifies HTTPS servers with Mozilla's root CA
-list compiled into its `webpki-roots` dependency. The `:cacerts` option does
-not change these roots. With `network: true`, the guest verifies them itself, with
-the CA certificates the VM is started with: by default the host's
-(`:public_key.cacerts_get/0` on the host). `:cacerts` replaces them with a
-PEM file or a list of DER certificates:
+With the HTTP grant, Kettlecorn verifies HTTPS servers with the Mozilla
+root certificates bundled through `webpki-roots`. For HTTPS over sockets,
+the Elixir host supplies its own CA certificates by default. Set
+`:cacerts` to a PEM file or a list of DER certificates to supply different
+roots to the guest.
 
 ```elixir
 {:ok, vm} =

@@ -161,12 +161,12 @@ for frame limits and oversized-reply behavior.
 
 ## HTTP access
 
-Start a VM with `http: true` in Elixir, set `VmOptions::http` to `true` in
-Rust, or use `kettlecorn-run --http`, to enable
-`Kettlecorn.HTTP`. Wasmtime makes these requests through `wasi:http` and
-verifies TLS with its compiled Mozilla root CA list. The `:cacerts` option
-does not change these roots. This grant permits any reachable destination;
-see [network grants](sandbox.md#network-grants).
+Start a VM with `http: true` in Elixir, set `VmOptions::http` to
+`NetworkAccess::Any` in Rust, or use `kettlecorn-run --http`, to enable
+`Kettlecorn.HTTP`. Requests go through `wasi:http`. Kettlecorn's HTTP
+sender verifies TLS with the bundled Mozilla root certificates and uses
+the proxy settings in the host process's environment. The `:cacerts`
+option applies to the sockets grant.
 
 `Kettlecorn.HTTP.available?()` returns whether HTTP is enabled.
 

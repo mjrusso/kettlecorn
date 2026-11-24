@@ -49,7 +49,9 @@ pub struct VmOptions {
     /// Defaults to [`NetworkAccess::Denied`]. Host CA certificates are not copied into the guest.
     pub network: NetworkAccess,
     /// Outgoing HTTP through WASI, with the same choices as `network`; `public` rules are not
-    /// supported. Defaults to [`NetworkAccess::Denied`]; requires the `http` Cargo feature.
+    /// supported. Requests go through the proxy in the process's `https_proxy`/`HTTPS_PROXY`
+    /// or `http_proxy`/`HTTP_PROXY`, except `no_proxy`/`NO_PROXY` hosts and loopback.
+    /// Defaults to [`NetworkAccess::Denied`]; requires the `http` Cargo feature.
     pub http: NetworkAccess,
     /// Cooked Mix bundle copied into the guest at `/app`. Defaults to none.
     pub app_dir: Option<PathBuf>,

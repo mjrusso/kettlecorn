@@ -17,19 +17,17 @@ Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
 
 ## Compare network grants
 
-Grant network access when the guest needs to make its own connections:
+Choose a grant for the connections the guest needs.
 
 * `network: true` gives sockets (`:gen_tcp`, `:ssl`, DNS) over Wasmtime's
   `wasi:sockets`. The guest does TLS itself and trusts the host's CA
   certificates, unless `:cacerts` names others.
-* `http: true` gives `wasi:http`: Wasmtime makes the requests and handles
-  TLS using its compiled Mozilla root CA list. The `:cacerts` option does
-  not change those roots. The guest installs
+* `http: true` enables `wasi:http`. Kettlecorn's HTTP sender verifies TLS
+  with the bundled Mozilla root certificates. The guest sets
   `Kettlecorn.HTTP.ReqAdapter` as Req's default adapter.
 
-Neither grant has an allowlist: a VM with one can reach anything the machine
-can, including services on `localhost`. The service here is a small HTTP
-server on the host, on `127.0.0.1`:
+Use `true` to allow any reachable destination, including services on
+`localhost`. This notebook starts a local HTTP server on `127.0.0.1`.
 
 ```elixir
 {:ok, listener} =

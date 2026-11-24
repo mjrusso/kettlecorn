@@ -572,33 +572,6 @@ pub(crate) fn allows_url(rules: &[NetworkRule], uri: &http::Uri) -> bool {
     }
 }
 
-#[cfg(feature = "http")]
-pub(crate) struct HttpPolicy {
-    pub(crate) rules: NetworkRules,
-}
-
-#[cfg(feature = "http")]
-impl wasmtime_wasi_http::WasiHttpHooks for HttpPolicy {
-    fn send_request(
-        &mut self,
-        request: http::Request<wasmtime_wasi_http::WasiBody>,
-        options: Option<wasmtime_wasi_http::RequestOptions>,
-        fut: Box<dyn Future<Output = Result<(), wasmtime_wasi_http::Error>> + Send>,
-    ) -> Box<
-        dyn Future<
-                Output = wasmtime_wasi_http::Result<(
-                    http::Response<wasmtime_wasi_http::WasiBody>,
-                    Box<dyn Future<Output = Result<(), wasmtime_wasi_http::Error>> + Send>,
-                )>,
-            > + Send,
-    > {
-        if !allows_url(&self.rules, request.uri()) {
-            return Box::new(async { Err(wasmtime_wasi_http::Error::HttpRequestDenied) });
-        }
-        wasmtime_wasi_http::default_hooks().send_request(request, options, fut)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

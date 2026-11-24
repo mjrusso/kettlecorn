@@ -3,6 +3,8 @@ mod cache;
 mod embedding_tests;
 mod installed;
 mod network;
+#[cfg(feature = "http")]
+mod outgoing;
 mod root;
 mod runtime;
 pub(crate) mod streams;
@@ -10,6 +12,15 @@ mod usage;
 
 pub(crate) use cache::CompilationCache;
 pub(crate) use network::HttpAccess;
+
+/// Whether the environment names a proxy for the HTTP grant.
+#[cfg(feature = "cli")]
+pub(crate) fn http_proxy_configured() -> Result<bool> {
+    #[cfg(feature = "http")]
+    return Ok(outgoing::Proxies::from_env()?.is_some());
+    #[cfg(not(feature = "http"))]
+    Ok(false)
+}
 pub use network::{NetworkAccess, NetworkRule, NetworkRules};
 pub(crate) use root::RootOptions;
 pub(crate) use runtime::GuestOptions;
@@ -103,8 +114,9 @@ struct State {
     sockets: Option<Arc<network::SocketPolicy>>,
     #[cfg(feature = "http")]
     http: wasmtime_wasi_http::WasiHttpCtx,
+    /// The HTTP grant's sender, with its allowlist and proxy.
     #[cfg(feature = "http")]
-    http_policy: Option<network::HttpPolicy>,
+    http_hooks: outgoing::HttpHooks,
 }
 
 impl WasiView for State {
@@ -122,10 +134,7 @@ impl wasmtime_wasi_http::WasiHttpView for State {
         wasmtime_wasi_http::WasiHttpCtxView {
             ctx: &mut self.http,
             table: &mut self.table,
-            hooks: match self.http_policy.as_mut() {
-                Some(policy) => policy,
-                None => wasmtime_wasi_http::default_hooks(),
-            },
+            hooks: &mut self.http_hooks,
         }
     }
 }
@@ -285,6 +294,16 @@ impl PreparedRuntime {
             }
             None => {}
         }
+        #[cfg(feature = "http")]
+        let http_hooks = outgoing::HttpHooks {
+            rules: options.http.rules().cloned(),
+            proxies: if options.http.granted() {
+                outgoing::Proxies::from_env()?
+            } else {
+                None
+            },
+            ..outgoing::HttpHooks::default()
+        };
         let mut limits = StoreLimitsBuilder::new();
         if let Some(bytes) = options.max_memory {
             limits = limits.memory_size(bytes);
@@ -299,11 +318,7 @@ impl PreparedRuntime {
                 #[cfg(feature = "http")]
                 http: wasmtime_wasi_http::WasiHttpCtx::new(),
                 #[cfg(feature = "http")]
-                http_policy: options
-                    .http
-                    .rules()
-                    .cloned()
-                    .map(|rules| network::HttpPolicy { rules }),
+                http_hooks,
             },
         );
         let mut store = Metered::new(store, options.usage.clone(), options.max_fuel);

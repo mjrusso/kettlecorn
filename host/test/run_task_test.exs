@@ -203,6 +203,43 @@ defmodule Kettlecorn.RunTaskTest do
     end
   end
 
+  @tag :integration
+  test "the HTTP grant sends requests through the proxy in the launcher's environment",
+       %{tmp_dir: dir} do
+    proxy = TestProxy.start()
+    url = "http://user:secret@127.0.0.1:#{proxy}"
+
+    env =
+      for name <- ~w(http_proxy https_proxy HTTP_PROXY HTTPS_PROXY), do: {name, url}
+
+    env = env ++ [{"no_proxy", nil}, {"NO_PROXY", nil}]
+
+    code = ~S"""
+    IO.inspect({Kettlecorn.HTTP.request(:get, "http://kettlecorn.test/hello"),
+                Kettlecorn.HTTP.request(:get, "https://kettlecorn.test/")})
+    """
+
+    {output, 0} =
+      System.cmd(
+        "mix",
+        ["kettlecorn.run", "--http", "-e", code],
+        Keyword.update!(task_options(dir, TestRuntime.runtime()), :env, &(&1 ++ env))
+      )
+
+    assert output =~ ~s|{{:ok, %{status: 200|
+    assert output =~ ~s|body: "proxied"|
+
+    # Plain HTTP goes to the proxy with the absolute URL. HTTPS opens a
+    # tunnel, and TLS for the origin starts inside it.
+    assert_received {:proxy, "GET http://kettlecorn.test/hello HTTP/1.1" <> head}
+    assert head =~ ~r/proxy-authorization: Basic dXNlcjpzZWNyZXQ=/i
+    assert_received {:proxy, "CONNECT kettlecorn.test:443 HTTP/1.1" <> head}
+    assert head =~ ~r/proxy-authorization: Basic dXNlcjpzZWNyZXQ=/i
+    # A TLS handshake record whose client hello names the origin.
+    assert_received {:tunnel, <<0x16, _::binary>> = hello}
+    assert hello =~ "kettlecorn.test"
+  end
+
   defp run_task(args, dir, runtime \\ TestRuntime.runtime()) do
     System.cmd("mix", ["kettlecorn.run" | args], task_options(dir, runtime))
   end

@@ -836,6 +836,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-util"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body",
+ "hyper",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1032,26 +1046,36 @@ name = "kettlecorn"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "bytes",
  "clap",
  "flate2",
  "futures-util",
  "http",
+ "http-body",
+ "http-body-util",
  "humantime",
+ "hyper",
+ "hyper-util",
  "libc",
  "mimalloc",
  "num-bigint",
+ "percent-encoding",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tar",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "toml",
  "ureq",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1458,7 +1482,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2318,15 +2342,12 @@ dependencies = [
  "hyper",
  "pin-project-lite",
  "rustix",
- "rustls",
  "tokio",
- "tokio-rustls",
  "tokio-util",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-io",
- "webpki-roots",
 ]
 
 [[package]]

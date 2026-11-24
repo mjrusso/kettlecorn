@@ -532,8 +532,9 @@ Embedded Rust VMs do not import host CA certificates during startup, and
 `VmOptions` has no certificate option. Enabling `network` alone does not
 install a guest CA bundle.
 
-With `wasi:http`, Wasmtime does TLS itself, with its compiled Mozilla root CA
-list. The guest's CA bundle does not change those roots.
+The `wasi:http` sender verifies TLS with Mozilla root certificates bundled
+through `webpki-roots`. The guest's CA bundle applies to connections made
+through sockets.
 
 ## Interactive IEx
 

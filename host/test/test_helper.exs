@@ -96,3 +96,49 @@ cond do
   true ->
     ExUnit.start()
 end
+
+defmodule TestProxy do
+  @moduledoc false
+  # An HTTP proxy on 127.0.0.1 that answers plain requests itself with
+  # "proxied". It accepts CONNECT tunnels and closes them after the first
+  # bytes through them. It sends the test process {:proxy, head} for each
+  # request head, and {:tunnel, bytes} for those bytes.
+
+  def start do
+    test = self()
+
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false, reuseaddr: true])
+
+    {:ok, port} = :inet.port(listener)
+    spawn_link(fn -> loop(listener, test) end)
+    port
+  end
+
+  defp loop(listener, test) do
+    {:ok, socket} = :gen_tcp.accept(listener)
+    head = read_head(socket, "")
+    send(test, {:proxy, head})
+
+    if String.starts_with?(head, "CONNECT") do
+      :ok = :gen_tcp.send(socket, "HTTP/1.1 200 Connection established\r\n\r\n")
+      {:ok, bytes} = :gen_tcp.recv(socket, 0, 10_000)
+      send(test, {:tunnel, bytes})
+    else
+      reply = "HTTP/1.1 200 OK\r\ncontent-length: 7\r\nconnection: close\r\n\r\nproxied"
+      :ok = :gen_tcp.send(socket, reply)
+    end
+
+    :gen_tcp.close(socket)
+    loop(listener, test)
+  end
+
+  defp read_head(socket, head) do
+    if String.contains?(head, "\r\n\r\n") do
+      head
+    else
+      {:ok, data} = :gen_tcp.recv(socket, 0, 10_000)
+      read_head(socket, head <> data)
+    end
+  end
+end

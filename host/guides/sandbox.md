@@ -231,10 +231,10 @@ API's `network: true`, the guest gets a copy of the host's CA certificates
 unless `:cacerts` says otherwise. They're public, but they tell the guest
 which private CAs the host trusts.
 
-The CLI selects a host CA bundle for its network grant. Embedded Rust VMs
-do not import host CA certificates automatically. The HTTP grant uses
-Wasmtime's compiled Mozilla roots in all execution modes; it does not use
-the guest's CA bundle. See [CA certificates](architecture.md#ca-certificates).
+The CLI selects a host CA bundle for its sockets grant. Embedded Rust VMs
+leave guest CA configuration to the application. In all execution modes,
+the HTTP sender uses the bundled Mozilla root certificates. See
+[CA certificates](architecture.md#ca-certificates).
 
 ## Evaluation timeouts
 

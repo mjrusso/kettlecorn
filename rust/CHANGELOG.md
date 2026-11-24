@@ -31,6 +31,9 @@
   `Only(NetworkRules)`, which limits the grant to the listed host names,
   addresses, address ranges and ports. `NetworkRules::new` returns `None` for
   an empty list. Replace `true` with `NetworkAccess::Any`.
+* The HTTP grant sends guest requests through the proxy in the process's
+  `http_proxy`/`HTTP_PROXY` and `https_proxy`/`HTTPS_PROXY`, honoring
+  `no_proxy`/`NO_PROXY`; loopback hosts are reached directly.
 
 ## 0.2.0
 
