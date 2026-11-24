@@ -31,11 +31,11 @@ specifies another directory.
 ## Steps
 
 1. **Prepare.** Set the version in `host/VERSION` and `rust/Cargo.toml`.
-   Refresh the lockfiles in `rust/` and `examples/rust/*/`. Add a `## <version>`
-   entry to `host/CHANGELOG.md` and `rust/CHANGELOG.md`. If the major or minor
-   version changed, update the dependency snippets in the root and package
-   READMEs, `examples/README.md`, `host/guides/`, the Mix task examples, and
-   every `Mix.install` cell in `host/notebooks/*.livemd`.
+   Refresh the lockfiles in `rust/` and `examples/rust/*/`. Move the entries
+   under `Unreleased` into a `## <version>` section in both changelogs.
+   If the major or minor version changed, update the dependency snippets in
+   the root and package READMEs, `examples/README.md`, `host/guides/`, the Mix
+   task examples, and every `Mix.install` cell in `host/notebooks/*.livemd`.
    Run `just docs-versions`. `nix flake check` and `just lint typecheck docs` must
    pass. Commit and push `main`.
 

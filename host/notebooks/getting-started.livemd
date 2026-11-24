@@ -31,7 +31,10 @@ with an embedded Wasmtime engine.
 {:ok, runtime} = Kettlecorn.Install.runtime()
 ```
 
-`mix kettlecorn.install` does the same from a Mix project.
+`mix kettlecorn.install` does the same from a Mix project. For proxy
+settings or a local release archive, see
+[runtime downloads](../guides/running-applications.md#runtime-downloads)
+and [offline deployment](../guides/running-applications.md#offline-deployment).
 
 ## Run one evaluation
 
@@ -52,12 +55,12 @@ when runs must not share state:
 instructions), and `max_lifetime` limits elapsed time in milliseconds. Both
 include startup and apply across all evaluations in a VM.
 
-`Kettlecorn.start_link/1` starts the launcher, boots OTP, and returns once the
-guest is ready. The first start compiles the emulator. Later starts use
-the launcher's cache, but still copy the runtime and boot OTP; see the
-[performance guide](../guides/performance.md).
-The following VM has a ten-minute lifetime for reading and running these
-cells. Restart from this cell if it expires.
+`Kettlecorn.start_link/1` waits for the guest to boot. The launcher compiles
+the emulator on a cache miss. Every VM copies the guest filesystem and
+boots OTP. See the [performance guide](../guides/performance.md) for startup
+costs.
+
+This VM has a ten-minute lifetime. Rerun this cell if it expires.
 
 ```elixir
 {:ok, vm} =
@@ -70,16 +73,20 @@ cells. Restart from this cell if it expires.
 
 ## Evaluate code
 
-`Kettlecorn.eval/3` returns the formatted result and captured standard output. For
-bounded plain data, it also returns the value itself:
+`Kettlecorn.eval/3` returns the formatted result, captured standard output,
+and reductions charged, even when you set no reduction limit. For bounded
+plain data, it also returns the value itself:
 
 ```elixir
 {:ok,
  %{
    "value" => [{1, 1}, {2, 4}, {3, 9}],
    "inspected" => "[{1, 1}, {2, 4}, {3, 9}]",
-   "output" => "hi\n"
+   "output" => "hi\n",
+   "reductions" => reductions
  }} = Kettlecorn.eval(vm, ~S|IO.puts("hi"); Enum.map(1..3, fn n -> {n, n * n} end)|)
+
+true = reductions > 0
 ```
 
 `"value"` is structured data; `"inspected"` is its formatted text. Writes to
@@ -208,6 +215,16 @@ others. Here a separate, unlinked VM runs out of memory:
   )
 
 reason
+```
+
+Fuel counts execution since VM startup. Memory reports the bytes of linear
+memory currently allocated. See
+[measuring resource use](../guides/sandbox.md#measuring-resource-use)
+for the remaining stats fields.
+
+```elixir
+{:ok, %{fuel_consumed: fuel, memory: memory}} = Kettlecorn.stats(vm)
+true = fuel > 0 and memory > 0
 ```
 
 ## Stop the VM

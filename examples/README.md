@@ -87,10 +87,10 @@ BEAM fatal error: binary_alloc: Cannot allocate 1000000 bytes of memory (of type
 ### Crypto, HTTP and sockets: [`06_network.exs`](06_network.exs)
 
 Crypto is always available. HTTP (`wasi:http`, through `Kettlecorn.HTTP`) and
-sockets (`wasi:sockets`, through `:gen_tcp`) work only when granted, and each
-grant allows *any* destination (see
-[network grants](../host/guides/sandbox.md#network-grants)). This example
-runs against a local `python3 -m http.server 8767`:
+sockets (`wasi:sockets`, through `:gen_tcp`) require separate grants.
+`--http` and `--network` allow any reachable destination. Use
+[allowlists](../host/guides/sandbox.md#network-allowlists) to restrict either
+grant. This example runs against a local `python3 -m http.server 8767`:
 
 ```console
 $ kr examples/06_network.exs http://127.0.0.1:8767/
@@ -110,6 +110,13 @@ HTTP via wasi:http (Kettlecorn.HTTP), available: true
 
 TCP via wasi:sockets (:gen_tcp)
   HTTP/1.0 200 OK
+```
+
+To reach the same server and restrict both grants to its address and port:
+
+```sh
+kr --http-allow 127.0.0.1:8767 --network-allow 127.0.0.1:8767 \
+  examples/06_network.exs http://127.0.0.1:8767/
 ```
 
 Req is in the runtime too; see [HTTP and Req](../host/guides/running-applications.md#http-and-req)
@@ -254,22 +261,55 @@ limits on instructions, call depth, and string size.
 The app bundles its own Lua dependency.
 
 The app disables Lua's clock and random functions. The bundled receipt
-script takes the time in Unix seconds and the code from the request.
-It returns the event's ID, `issued_at` (that time),
-`valid_until` (30 days later, in Unix seconds) and the code:
+function takes the issue time in Unix seconds and a receipt code from the
+request. It returns the ID, issue time, expiry time (30 days later), and
+receipt code. Run `just build-examples` if you have yet to cook the bundles.
+This example sends the same requests to two fresh VMs and checks that
+both runs return the same results. The order count depends on earlier
+requests, so replay the list in order.
 
 ```elixir
-{:ok, vm} = Kettlecorn.start_link(app: "_kettlecorn/examples/lua")
+order = %{
+  "id" => "order-1",
+  "items" => [%{"unit_price_cents" => 2500, "quantity" => 2}]
+}
 
-{:ok, {:ok, ["order-1", 1_767_225_600, 1_769_817_600, 123_456]}} =
-  Kettlecorn.call(vm, :lua_example, {:receipt, %{"id" => "order-1"}, 1_767_225_600, 123_456})
+requests = [
+  {:transform, order},
+  {:receipt, %{"id" => "order-1"}, 1_767_225_600, 123_456},
+  {:transform, order}
+]
 
-Kettlecorn.stop(vm)
+replay = fn ->
+  {:ok, vm} =
+    Kettlecorn.start_link(
+      app: "_kettlecorn/examples/lua",
+      max_fuel: 100_000_000_000,
+      max_lifetime: 30_000
+    )
+
+  try do
+    for request <- requests do
+      {:ok, {:ok, result}} = Kettlecorn.call(vm, :lua_example, request)
+      result
+    end
+  after
+    Kettlecorn.stop(vm)
+  end
+end
+
+results = [
+  ["order-1", 5000, "standard", 1],
+  ["order-1", 1_767_225_600, 1_769_817_600, 123_456],
+  ["order-1", 5000, "standard", 2]
+]
+
+^results = replay.()
+^results = replay.()
 ```
 
-The requests are the app's only inputs. Sent in the same order to a new VM,
-they return the same results; see
-[controlled inputs](../host/guides/sandbox.md#controlled-inputs).
+See [controlled inputs](../host/guides/sandbox.md#controlled-inputs) for
+replaying programs that also make host calls.
 
 ### [`apps/dune`](apps/dune)
 
@@ -295,9 +335,10 @@ iex(3)> DuneExample.eval("DateTime.utc_now()")
  "** (DuneRestrictedError) function DateTime.utc_now/0 is restricted"}
 ```
 
-From a host program, configure a handler for the `"double"` host call. Give
-host-call arguments string keys: Dune replaces atoms that evaluated code
-creates, so an atom key can reach the host under Dune's replacement name.
+From a host program, register a handler that supplies a seed. Use string
+keys for host-call arguments because Dune can replace atoms created by
+evaluated code. Each evaluation below starts the generator with the same
+seed, so it produces the same pair of draws.
 
 ```elixir
 {:ok, vm} =
@@ -305,31 +346,32 @@ creates, so an atom key can reach the host under Dune's replacement name.
     app: "_kettlecorn/examples/dune",
     preload: :strict,
     handlers: %{
-      "double" => fn
-        %{"n" => n} when is_number(n) -> {:ok, 2 * n}
-        _args -> {:error, "expected a number"}
+      "seed" => fn
+        %{"stream" => "dice"} -> {:ok, 42}
+        _args -> {:error, "unknown stream"}
       end
     },
     max_fuel: 100_000_000_000,
     max_lifetime: 30_000
   )
 
-code = ~S|Kettlecorn.Host.call("double", %{"n" => 21})|
-{:ok, {:ok, "{:ok, 42}", ""}} = Kettlecorn.call(vm, :dune_example, {:eval, code})
+code = ~S"""
+{:ok, seed} = Kettlecorn.Host.call("seed", %{"stream" => "dice"})
+state = :rand.seed_s(:exsss, seed)
+{first, state} = :rand.uniform_s(6, state)
+{second, _state} = :rand.uniform_s(6, state)
+{first, second}
+"""
+
+{:ok, {:ok, rolls, ""}} = Kettlecorn.call(vm, :dune_example, {:eval, code}, 10_000)
+{:ok, {:ok, ^rolls, ""}} = Kettlecorn.call(vm, :dune_example, {:eval, code}, 10_000)
 Kettlecorn.stop(vm)
 ```
 
-The example restricts process creation, messaging, and the clock and
-random functions listed above. `preload: :strict` loads modules from the
-boot-time code path and stops the VM on a later on-demand load. Kettlecorn
-provides the isolation boundary.
-
-Dune sets a wall-clock timeout and polls the evaluation's reduction count
-in a separate process. The checker competes for the guest's scheduler
-while code runs and keeps consuming CPU and fuel while a host call waits.
-The stopping point can vary with scheduling and reply timing. This
-example runs Dune in a GenServer. Use VM-wide limits such as `max_fuel`
-and `max_lifetime` to bound that work.
+Dune polls the evaluation's reduction count from a separate guest process,
+which consumes fuel even while the evaluation waits for a host call.
+Dune's wall-clock timeout and the scheduler can affect where it stops.
+The example sets `max_fuel` and `max_lifetime` to limit the whole VM.
 
 ## Rust projects
 

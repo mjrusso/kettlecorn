@@ -95,11 +95,9 @@ runtime's Elixir version and OTP major release. See
 [cooking Mix applications](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#cooking-mix-applications)
 for the build step.
 
-`Vm::shutdown` cancels execution, waits for the VM's private filesystem
-to be removed, and returns a `Shutdown` with the VM's final `stats` and a
-`result`. The result is an error if the guest had already stopped, for
-example by running out of fuel. Dropping the VM requests cancellation; use
-`shutdown` when you need to wait for cleanup.
+`Vm::shutdown` cancels execution and waits for private-root cleanup to
+finish. It returns the VM's final `stats` and a `result` that can report a
+guest exit or a cleanup failure. Dropping the VM requests cancellation.
 
 ```rust
 let shutdown = vm.shutdown().await;
@@ -131,18 +129,17 @@ On Linux, the cache is under `$XDG_CACHE_HOME` or `~/.cache`. On macOS, it is
 under `~/Library/Caches`. Both use `kettlecorn/runtime-<version>` within that
 directory. Cached releases must match the crate version and host platform.
 
-The installer reuses a compatible cached runtime without reading the
-archive. On a fresh install it verifies the archive's SHA-256 against the checksum
-shipped with the crate before installing it atomically in the cache, for a
-download or an archive on disk. See
-[offline deployment](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#offline-deployment). It leaves
-invalid cache entries in place; move an invalid entry aside before retrying.
+The download and archive installers both reuse a compatible cached runtime.
+On a fresh install, they verify the archive against the SHA-256 bundled
+with the crate before publishing it to the cache. Move an invalid cache
+entry aside before retrying. See
+[offline deployment](https://github.com/mjrusso/kettlecorn/blob/main/host/guides/running-applications.md#offline-deployment).
 `Runtime::install_with_progress` reports cumulative downloaded bytes and an
-optional total byte count. Both installation methods block; call them on a
+optional total byte count. The installers block. Call them on a
 background thread from an async application or GUI.
 
-All three loading methods require the runtime's protocol and Wasmtime
-versions to match the crate. A Wasmtime mismatch returns
+Loading a runtime requires matching protocol and Wasmtime versions.
+A Wasmtime mismatch returns
 `Error::IncompatibleEngine`. See [runtime releases](https://github.com/mjrusso/kettlecorn/releases)
 for downloadable archives.
 
@@ -185,26 +182,21 @@ limit match.
 
 ### Preload and evaluation budgets
 
+Set `VmOptions::preload` to `Preload::Strict` to stop the VM on an on-demand
+load after preloading, including while applications start. Set
+`VmOptions::late_loads` to receive module names. When it
+is unset, diagnostics go to a configured `VmOptions::stderr` channel. Full
+channels drop reports.
+
 ```rust
-use kettlecorn::{EvalOptions, Preload, VmOptions};
+use kettlecorn::EvalOptions;
 use std::num::NonZeroU64;
-use tokio::sync::mpsc;
 
-let (late_loads, mut reports) = mpsc::channel(16);
-let mut options = VmOptions::default();
-options.preload = Preload::Strict;
-options.late_loads = Some(late_loads);
-
-let vm = runtime.start(options).await?;
 let evaluation = vm.eval("Enum.sum(1..10)", EvalOptions {
     max_reductions: NonZeroU64::new(20_000),
     ..Default::default()
 }).await?;
 ```
-
-Read module names from `reports`. Strict mode stops the VM on an on-demand load
-after preloading, including while applications start. When `late_loads` is unset, diagnostics go to a configured
-`VmOptions::stderr` channel. Full channels drop reports.
 
 `max_reductions` limits one evaluation and its descendants. Read the
 charged count from `evaluation.reductions`. If a scheduler charge exceeds

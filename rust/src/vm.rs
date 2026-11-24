@@ -88,10 +88,9 @@ pub struct VmOptions {
     pub stderr: Option<mpsc::Sender<Vec<u8>>>,
     /// Selects a preload mode. Defaults to [`Preload::Off`].
     pub preload: Preload,
-    /// Receives the name of each module, such as `"Elixir.Mod"`, that the guest
-    /// loads on demand after preload. Without a sender, each one is reported as a
-    /// stderr diagnostic. Full channels discard names. The guest can send these
-    /// events itself, so treat them as guest data.
+    /// Receives names of modules loaded on demand after preload, such as
+    /// `"Elixir.Mod"`. If unset, reports go to a configured [`Self::stderr`]
+    /// sender. Full channels discard reports. Treat these events as guest data.
     pub late_loads: Option<mpsc::Sender<String>>,
     functions: HashMap<String, HostFunction>,
 }

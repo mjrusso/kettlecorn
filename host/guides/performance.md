@@ -1,8 +1,8 @@
 # Performance
 
-Starting a VM copies the runtime root and boots OTP. A cold component cache
-also requires compilation. Reuse a running VM for repeated evaluations;
-give mutually untrusted tenants separate VMs. See
+Starting a VM copies the guest filesystem and boots OTP. The launcher
+compiles the emulator on a cache miss. Reuse a VM for repeated evaluations
+from the same tenant. Give mutually untrusted tenants separate VMs. See
 [compilation cache](sandbox.md#compilation-cache) for cache configuration and
 trust requirements.
 
@@ -18,8 +18,7 @@ just bench-rust
 ```
 
 `just bench` runs all four suites. `BENCH_TIME` sets seconds per scenario for
-the Elixir benchmarks. `BENCH_SAMPLES` sets how many calls the Rust benchmark
-measures per operation per round.
+the startup and workload benchmarks.
 
 ```sh
 BENCH_TIME=30 just bench
@@ -31,8 +30,9 @@ source tree.
 ### Startup
 
 `host/bench/startup.exs` measures VM start and stop with a warm cache, with
-compilation caching disabled, and with `preload: true`. It also covers `Kettlecorn.run/2`,
-concurrent VM starts, the script CLI, and native `elixir -e` as a baseline.
+compilation caching disabled, and with `preload: true`. It also measures
+`Kettlecorn.run/2`, concurrent VM starts, and the script CLI. Native
+`elixir -e` serves as the baseline.
 Startup includes root copying and guest boot.
 
 ### Workloads
@@ -48,7 +48,7 @@ host/guest round trip.
 `host/bench/memory.exs` starts `BENCH_VMS` VMs (default 8) and reports the
 mean resident set size (RSS), private memory, and proportional set size
 (PSS) per launcher process. PSS divides shared pages among the processes
-that map them. The benchmark reads Linux's `/proc/<pid>/smaps_rollup`.
+that map them. This benchmark requires Linux with `/proc/<pid>/smaps_rollup`.
 
 ### Rust embedding
 
@@ -57,23 +57,19 @@ just bench-rust
 BENCH_SAMPLES=100 just bench-rust
 ```
 
-The Rust suite runs an optimized build with the default VM settings. Each
-startup scenario uses a fresh process and a temporary compilation cache. The
-first process compiles the component, and a second starts with that disk
-cache populated. The suite also measures another VM on the same `Runtime`
-and times `Runtime::warm_up` separately from `Runtime::start`.
+The Rust suite runs an optimized build. It compares startup with an empty
+disk cache, startup in a second process using that cache, and startup of
+another VM on the same `Runtime`. It times `Runtime::warm_up` separately
+from `Runtime::start`.
 
 For dispatch, `Vm::call` and `Vm::eval` alternate on one running VM and
 send the same GenServer request. The suite reports minimum, median, and
 95th-percentile latency for each of three rounds. `BENCH_SAMPLES` sets the sample
 count per operation per round and defaults to 2,000.
-The suite also reports mean guest-to-host round-trip time per call. It times
-one `Vm::eval` that makes 10,000 calls to a Rust callback and divides the
-elapsed time by 10,000.
+The callback benchmark reports the mean time per call over 10,000 calls in
+one `Vm::eval`. The timing includes the guest loop and evaluation overhead.
 
-The usage scenario starts `BENCH_VMS` metered VMs in one process and reports
-fuel used at boot, guest linear memory, and the increase in host process
-memory per embedded VM. The process figures include host allocations and
-compiled code.
-It then blocks a VM on a host call with `timeout: :infinity` for
-`BENCH_IDLE_SECONDS` (default 30) and reports the fuel consumed meanwhile.
+After `Runtime::warm_up`, the usage benchmark starts `BENCH_VMS` metered VMs.
+It reports boot fuel and linear memory for the first VM and, on Linux, the
+increase in process RSS, private memory, and PSS per idle VM. It then measures
+fuel used while one VM waits on a host call for `BENCH_IDLE_SECONDS` (default 30).

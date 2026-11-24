@@ -63,7 +63,8 @@ end)
 #=> {:ok, %{
 #     "value" => %{101 => 1000, 102 => 2000},
 #     "inspected" => "%{101 => 1000, 102 => 2000}",
-#     "output" => "This is your BEAM on WASI.\n"
+#     "output" => "This is your BEAM on WASI.\n",
+#     "reductions" => ...
 #   }}
 
 Kettlecorn.stop(vm)
@@ -76,6 +77,7 @@ Kettlecorn.stop(vm)
 | `"value"` | The result as plain data, within the evaluator's traversal limit. Omitted for other results. |
 | `"inspected"` | The result's text representation. |
 | `"output"` | Captured standard output. |
+| `"reductions"` | Work charged to the evaluation, its descendants, and its output callbacks. |
 
 Writes to stderr go to the VM's console output, available through owner events
 and `Kettlecorn.take_output/1`.
@@ -91,7 +93,9 @@ The example sets two limits for the whole VM:
 
 Both include startup and apply across all evaluations in that VM. Use
 `Kettlecorn.stats(vm)` to read fuel and memory while it runs. To cap a single
-evaluation, pass `max_reductions: n` to `Kettlecorn.eval/3`.
+evaluation, pass `max_reductions: n` to `Kettlecorn.eval/3`. See
+[measuring resource use](guides/sandbox.md#measuring-resource-use) and
+[evaluation reduction limits](guides/sandbox.md#evaluation-reduction-limits).
 
 `start_link/1` links the VM to its caller: a resource limit or guest crash can
 terminate that caller. `Kettlecorn.run/2` starts a fresh VM, evaluates code
@@ -114,6 +118,11 @@ after each one. The final `{:stopped, stats}` event needs no acknowledgement.
 Exceeding the unacknowledged event count or byte budget stops
 the VM. See [sandbox and resource limits](guides/sandbox.md) for delivery
 budgets and host memory and disk controls.
+
+Guests can also call host functions. Pass `:handlers` for named functions or
+`:handler` for a stateful `Kettlecorn.HostHandler`. An owner can reply
+manually with `Kettlecorn.reply/3`. See
+[host calls](guides/guest-api.md#host-calls).
 
 ## Command line
 
@@ -140,7 +149,9 @@ the build separately. See [Cooking Mix applications](guides/running-applications
 
 Compile guest `.beam` files with the runtime's OTP major release and
 **exact Elixir version**, recorded in its `manifest.json`. This also applies
-to dependencies loaded through `code_paths`.
+to dependencies loaded through `code_paths`. Set `preload: :strict` to
+load modules during boot and stop the VM if it later loads a module on
+demand. See [preloading modules](guides/sandbox.md#preloading-modules).
 
 ## Configuration and deployment
 

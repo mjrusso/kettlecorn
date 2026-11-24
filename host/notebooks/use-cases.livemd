@@ -118,8 +118,10 @@ end
 Kettlecorn.stop(shop)
 ```
 
-The guest waits up to five seconds by default. If the call times out,
-Kettlecorn cancels the handler's process.
+The guest waits up to five seconds by default. On timeout, Kettlecorn
+stops the task running the function. To keep state between calls, use
+`Kettlecorn.HostHandler`. See
+[host calls](../guides/guest-api.md#host-calls).
 
 ## Host third-party plugins
 
@@ -214,3 +216,7 @@ String keys keep the result independent of which atoms the host has loaded.
 [Validating guest data](guest-data.livemd) covers constructors and nested
 results. [Running applications](../guides/running-applications.md) shows how
 to package a plugin and its dependencies as a cooked application.
+
+The Lua and Dune examples show how to replay requests and supply time
+or randomness from the host. See
+[controlled inputs](../guides/sandbox.md#controlled-inputs).

@@ -37,8 +37,11 @@ With `owner: pid` set when starting the VM, the owner receives:
 The host decodes `term` as untrusted data through `Kettlecorn.ETF`.
 `Kettlecorn.ETF.to_json/1` accepts decoded values such as `term` or the
 `"value"` from an evaluation. It returns `{:ok, data}` with string keys,
-lists for tuples, and names for atoms, or `{:error, reason}`. Delivery has
-a bounded outstanding budget with host acknowledgments. See
+lists for tuples, and names for atoms. Unsupported values such as guest PIDs
+and collisions between converted keys return `{:error, reason}`. See the
+[JSON conversion example](../notebooks/guest-data.livemd#convert-guest-values-for-json).
+
+The owner acknowledges delivered events to release capacity. See
 [output and messages](sandbox.md#output-and-messages).
 
 In the other direction, `Kettlecorn.send/4` delivers `{:wasm, payload}` to a
@@ -61,10 +64,10 @@ the `{:wasm, payload}` messages used by the Elixir host's `Kettlecorn.send/4`.
 `Kettlecorn.Host.call(name, args, opts)` asks the host to perform
 an operation. `name` is a string, `args` defaults to `%{}`, and `opts` defaults
 to `[]`. `args` must be a map. The `:timeout` option is in milliseconds and
-defaults to 5000; it also accepts `:infinity`. An unanswered call returns
-`{:error, :timeout}`. A request that fails the
-[frame size check](#frame-size-checks) returns `{:error, :frame_too_large}`
-before sending.
+defaults to 5000. If the deadline expires, the call returns
+`{:error, :timeout}`. Pass `:infinity` to wait without a deadline. A request
+that fails the [frame size check](#frame-size-checks) returns
+`{:error, :frame_too_large}` before sending.
 
 ### Elixir host
 
@@ -75,50 +78,57 @@ handler modes.
   argument map. The function returns the answer:
 
   ```elixir
-  Kettlecorn.start_link(handlers: %{"double" => fn %{"n" => n} -> {:ok, 2 * n} end})
+  double = fn
+    %{"n" => n} when is_number(n) -> {:ok, 2 * n}
+    _args -> {:error, "expected a number"}
+  end
+
+  {:ok, vm} = Kettlecorn.start_link(handlers: %{"double" => double})
   ```
 
-  Other names get `{:error, "no host handler"}`, as when the VM has no
-  handlers or owner.
+  Unregistered names get `{:error, "no host handler"}`.
 * `handler: {module, arg}` starts a `Kettlecorn.HostHandler` process that
-  answers every call, one callback at a time, with state kept between
-  calls; the VM queues the other calls. It can answer later with
-  `Kettlecorn.HostHandler.reply/2`. A result other than `{:ok, value}` or
-  `{:error, binary_reason}` answers `{:error, "invalid host function result"}`,
-  as for functions, and a reply too large to send answers
-  `{:error, "host reply too large"}`.
+  runs callbacks serially and keeps state between them. A callback can defer
+  its reply, letting later callbacks run before it answers with
+  `Kettlecorn.HostHandler.reply/2`. See the counter example in
+  `Kettlecorn.HostHandler`.
 * Without either, the owner receives
   `{:kettlecorn, vm, {:host_call, reply_to, name, args}}` and answers with
   `Kettlecorn.reply(vm, reply_to, result)`. With no owner, the host replies
   `{:error, "no host handler"}`.
 
-With `:handlers` or `:handler`, at most `:max_host_calls` calls (default 4)
-are running, queued, awaiting a reply, or cancelled with a
-`c:Kettlecorn.HostHandler.handle_cancel/2` callback still to run; further
-calls get `{:error, "host call capacity exhausted"}`. `Kettlecorn.reply/3`
-queues a reply without confirming delivery.
+Guest code can call the host during boot, including from a preload
+`@on_load` callback. If you handle calls manually, have the owner receive
+and answer them while another process waits for `Kettlecorn.start_link/1`.
+Call `Kettlecorn.acknowledge/1` after handling each owner event for a call
+or cancellation.
+
+With `:handlers` or `:handler`, `:max_host_calls` (default 4) counts running
+and queued calls, calls awaiting a deferred reply, and calls still being
+cancelled. Further calls get `{:error, "host call capacity exhausted"}`.
+Invalid results return `{:error, "invalid host function result"}` and
+oversized replies return `{:error, "host reply too large"}`.
+`Kettlecorn.reply/3` queues a reply without confirming delivery.
 
 ### Cancellation and late replies
 
-The guest tells the host it has stopped waiting for a call when the call
-times out or the calling process exits first, for example an evaluation
-stopped by its timeout or reduction limit. An Elixir host then kills a
-function's process, drops a call still queued for the
-`Kettlecorn.HostHandler` process, calls
-`c:Kettlecorn.HostHandler.handle_cancel/2` once the call's callback has
-returned without a reply, or sends the owner
-`{:kettlecorn, vm, {:host_call_cancel, reply_to}}`. The guest drops a reply that arrives after the
-cancellation, whichever host sends it, so it never reaches the caller's
-mailbox. The exception is a call made while the guest's host-call process
-isn't running, before the guest's applications start (for example from an
-`@on_load` callback during preload) or while that process restarts: a late
-reply reaches its caller's mailbox as `{:wasm, {token, result}}`, and the
-call isn't cancelled if its caller exits. If that process stops while a
-call waits, the call is cancelled and returns `{:error, :interrupted}`; the
-host may already have handled it.
+With the guest's reply router running, a timeout or caller exit sends a
+cancellation notice. The guest discards late replies. If the router
+itself stops while the caller waits, the caller sends a cancellation
+notice and returns `{:error, :interrupted}`. Any effects the handler has
+already committed still apply.
 
-A VM's `max_lifetime` keeps counting while the guest waits for a host call,
-so a slow host function uses up the VM's lifetime.
+Before the router starts, such as during a preload `@on_load` callback,
+or while it restarts, replies go directly to the caller. A timeout still
+sends a cancellation notice. The caller can receive a late reply as
+`{:wasm, {token, result}}`, and its exit sends no cancellation notice.
+
+The Elixir VM stops a function handler's task or drops a queued call.
+If a stateful handler deferred its reply, the VM calls
+`c:Kettlecorn.HostHandler.handle_cancel/2` and holds the capacity slot until
+that callback returns. With manual delivery, the owner receives
+`{:kettlecorn, vm, {:host_call_cancel, reply_to}}`.
+The VM's lifetime includes time spent waiting for host calls.
 
 ### Rust host
 

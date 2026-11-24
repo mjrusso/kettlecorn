@@ -27,12 +27,11 @@ fuel limits guest execution, not the number of bytes delivered to the host.
 
 ## Measuring resource use
 
-`Kettlecorn.stats/1` and `Vm::stats` report the fuel a VM has consumed since
-it started, including boot, and its WebAssembly linear memory. Fuel is
-reported only when `max_fuel` is set. The count is updated when the guest
-calls the host and on every 10 ms epoch tick while it runs, and it covers
-the work up to the reply of a completed `eval` or `call`. Linear memory
-never shrinks, so it is the most the guest has needed.
+`Kettlecorn.stats/1` and `Vm::stats` report allocated WebAssembly linear
+memory in bytes. When you set `max_fuel`, they also report fuel consumed
+since the VM started, including boot. Fuel updates when the guest calls
+into the host and at 10 ms intervals while it runs. After an `eval` or
+`call` receives its reply, the sample includes the work up to that reply.
 
 `Kettlecorn.stats/1` also reports the launcher process's resident set size
 as `rss`, on Linux only; it is `nil` on macOS. When a VM with an `:owner`
@@ -42,19 +41,17 @@ running out of fuel. If the launcher exits without reporting stats, the
 event is `{:stopped, nil}`. This event needs no acknowledgement.
 
 In Rust, `Vm::shutdown` returns a `Shutdown` with the final `stats` and a
-`result`, which is an error if the guest had already stopped.
+`result` that can report a guest exit or a cleanup failure.
 
 ## Preloading modules
 
-OTP loads a module the first time code calls it. Which modules a VM has
-loaded, and the order of its atom table, then depend on what the guest ran
-first. On this runtime, the order in which atoms enter the table can
-affect map iteration, including `Map.keys/1` on a map with atom keys.
-With `preload: true` (`VmOptions::preload = Preload::On` in Rust,
-`--preload on` for the launcher and `kettlecorn-run`), the VM loads modules from
-its boot-time code path, including the cooked app's, in a fixed order.
-Preloading adds to startup time. The [performance guide](performance.md)
-shows how to measure it.
+An on-demand module load can change when atoms enter the table, which
+can affect iteration order in maps with atom keys. With `preload: true`
+(`Preload::On` in Rust, `--preload on` on the CLI), the VM loads modules
+on the boot-time code path in name order, skipping modules already
+loaded. This includes the cooked app. A module's `on_load` callback can
+load another module before its turn. A preload failure aborts boot.
+See the [performance guide](performance.md) for startup costs.
 
 After preload, the code server reports each module it loads on demand from
 the code path, for example from a directory the guest added. The owner
@@ -64,8 +61,8 @@ In Rust, names go to `VmOptions::late_loads` when configured, or to
 `VmOptions::stderr` when configured. Reports are dropped when the channel
 is full. `kettlecorn-run` writes to stderr.
 `preload: :strict` (`Preload::Strict`, `--preload strict`) also
-writes the module's name to the guest's stderr and stops the VM with exit
-status 1. Use it in tests.
+writes the module's name to guest stderr and stops the VM with exit
+status 1.
 
 Binaries loaded with `:code.load_binary/3`, such as modules that evaluated
 code defines, and explicit `:code.load_file/1` calls are not reported. The
@@ -222,14 +219,12 @@ metadata endpoints. `[allow: [:public]]` (`--network-allow public` and
 `--http-allow public` for `kettlecorn-run`; a `public` rule in Rust) allows
 public addresses only, which excludes loopback, private, link-local
 (including the `169.254.169.254` metadata address), and other
-special-purpose ranges. It classifies addresses, not routes: if the host's
-network routes a public address to an internal service, `public` allows it.
-Use an [allowlist](#network-allowlists) to limit access further, or expose
-selected operations as host calls through `Kettlecorn.Host.call/3`. An
-Elixir host answers them with `:handlers`, a `:handler` or its owner (see
-[host calls](guest-api.md#host-calls)); a Rust host uses functions
-registered with `VmOptions::register`. OS-level network confinement applies to the launcher
-for Elixir/CLI VMs and to the application process for embedded Rust VMs.
+special-purpose ranges.
+Use the [allowlist rules below](#network-allowlists) to restrict
+destinations by host, address, or port. To let guests request specific
+operations from the host, use [host calls](guest-api.md#host-calls).
+Apply OS network restrictions to the launcher process for Elixir and CLI
+VMs, and to the application process for embedded Rust VMs.
 
 ### Network allowlists
 
@@ -248,8 +243,8 @@ string, or use `:public` in Elixir.
 
 Add `:port` to allow one port, for example `api.example.com:443` or
 `public:443`. An allowlist must have at least one rule. Rules are case
-insensitive. An IPv4-mapped IPv6 rule, such as `[::ffff:10.0.0.1]`, means
-the IPv4 address, which is how mapped destinations are matched.
+insensitive. The launcher compares IPv4-mapped IPv6 rules and destinations
+as IPv4 addresses. For example, `[::ffff:10.0.0.1]` matches `10.0.0.1`.
 
 `public` is an IPv4 address outside the loopback, private, link-local,
 shared, documentation, benchmarking, multicast, and reserved ranges, or an
@@ -258,32 +253,34 @@ IPv6 address in `2000::/3` outside the IETF protocol assignment
 not by allocation: unallocated and IANA-reserved space inside `2000::/3`,
 such as `3000::/4`, counts as public. An address in the NAT64 prefix
 `64:ff9b::/96` is judged by its embedded IPv4 address; other IPv6 space,
-including the local-use translation prefix, isn't public. This classifies
-addresses: the host's network decides where an address routes.
+including the local-use translation prefix, isn't public. A public
+address can still route to an internal service on the host's network.
 
-With a sockets allowlist, the guest's name lookups resolve only names that a
-rule lists, or any name with `public`. Names are looked up as absolute names,
-first in `/etc/hosts`, then through the host's resolver. The host's search
-domains don't apply, so a rule for `db` allows `db.`, not
-`db.corp.example`. To reach a service by a name the search domains would
-complete, list its full name. A hostname lookup returns only addresses
-permitted by the rules or recorded for that name's allowed ports. It fails
-if none qualify. The launcher returns a literal address unchanged and
-checks access when the guest uses the socket. A connection or UDP datagram is
-allowed when an address rule matches its destination, or when a lookup of a
-listed name returned that address, on the port that name's rule allows. The
-check uses the address actually connected to, so a listed name that resolves
-to a private address reaches it, and `public` refuses it.
+#### Sockets
 
-A VM retains up to 4,096 address and port pairs from lookups for its lifetime. An
-address allowed on every port counts once, and a port that an address rule
-already allows isn't recorded. A pair that would exceed the limit isn't
-recorded, so the name gives it no permission. The lookup still returns an
-address recorded for one of the name's ports, or one that an address rule,
-such as `public`, allows. The
-guest can't listen for or accept connections. A denied connection or name lookup fails
-with `:eacces`. The guest's own host name, `localhost`, still resolves to
-`127.0.0.1` inside the guest, without a lookup; connecting to it needs a rule.
+A hostname rule permits connections to the addresses returned by its
+lookup, on the rule's ports. The guest can look up names matched by a rule.
+With a `public` rule it can look up any name. The launcher checks
+`/etc/hosts` and then uses the host resolver with an absolute name, so host
+search domains never expand a rule for `db` to `db.corp.example`.
+
+An address rule can permit a destination without a lookup. A hostname
+rule can permit a private address if the name resolves to it. A hostname
+lookup returns only addresses permitted by the rules or recorded for that
+name's allowed ports. The launcher returns a literal address unchanged
+and checks access when the guest uses the socket.
+
+The VM retains up to 4,096 address and port pairs from lookups for its
+lifetime. An address allowed on every port counts once. Pairs already
+permitted by an address rule take no space. At the limit, additional pairs
+gain no permission.
+
+Socket allowlists deny listening and accepting connections. A denied
+connection or lookup returns `:eacces`. The guest resolves its own name,
+`localhost`, to `127.0.0.1` without a lookup. Connecting still requires
+permission for that address and port.
+
+#### HTTP
 
 The HTTP launcher checks the URL host and port before sending each request.
 
@@ -293,10 +290,10 @@ The HTTP launcher checks the URL host and port before sending each request.
 | Hostname that matches a name rule | The name rule matches the host and port. The rule trusts the name's resolution, including private results. | Uses the configured proxy if one applies. |
 | Other hostname | The launcher resolves the name and connects only to IP addresses permitted by an address rule on that port. | Requires a direct connection. |
 
-For a direct connection with an allowlist, the launcher resolves hostnames
-as absolute names. A proxy resolves names itself. A hostname that needs
-an address rule is denied if a proxy applies. Add it to `NO_PROXY` to
-select a direct connection that still checks the resolved addresses.
+The launcher resolves hostnames as absolute names for direct requests
+with an allowlist. If a hostname needs an address rule and a proxy
+applies, add the hostname to `NO_PROXY` so the launcher can resolve and
+check its addresses.
 
 A request without a matching rule fails with `:http_request_denied`. If a
 direct lookup returns addresses and the address rules exclude all of them,
@@ -307,27 +304,33 @@ follows a redirect, the new request is checked again.
 
 ### Proxies
 
-**HTTP grant.** The launcher sends guest HTTP requests through the proxy in
-its environment, read when the VM starts: `http_proxy` or `HTTP_PROXY` for
-`http://` URLs, `https_proxy` or `HTTPS_PROXY` for `https://` URLs, and
-`no_proxy` or `NO_PROXY` for hosts to reach directly (comma-separated host
-names, domains such as `.example.com`, addresses, which match any spelling
-of the same address, or `*`). Loopback hosts
-are always reached directly. An Elixir host's launcher inherits the BEAM's
-environment, and an embedded Rust VM reads its process's. Proxies must be
-`http://` URLs; credentials in the URL (`http://user:password@proxy:3128`)
-are sent as `Proxy-Authorization`. For HTTPS, the launcher opens a
-`CONNECT` tunnel and verifies the origin's TLS certificate through it. See
-[network allowlists](#network-allowlists) for requests that require a direct
-connection.
+**HTTP grant.** The launcher reads proxy settings from its environment
+when the VM starts. An embedded Rust VM reads its application's process
+environment.
 
-**Network grant.** The guest doesn't inherit the host's environment, and
-its HTTP clients don't read proxy variables. Configure the proxy in guest
-code, for example with Req's `connect_options: [proxy: {:http,
-"proxy.internal", 3128, []}]`, or `:httpc.set_options/1`, and pass its
-address in with the `:env` option if it varies. With an allowlist, list the
-proxy (`proxy.internal:3128`); the allowlist then sees only the proxy, so
-the proxy must enforce any per-destination policy.
+| Variable | Applies to |
+|---|---|
+| `http_proxy` or `HTTP_PROXY` | Requests to `http://` URLs |
+| `https_proxy` or `HTTPS_PROXY` | Requests to `https://` URLs |
+| `no_proxy` or `NO_PROXY` | Direct connections to comma-separated hostnames, domains, or IP addresses |
+
+The first nonblank value wins, with lowercase checked first. Entries such
+as `.example.com` match the domain and its subdomains. Use `*` to bypass
+proxies for all requests. Loopback IP addresses, `localhost`, and
+subdomains of `localhost` always use direct connections.
+
+The proxy address must use `http://` or omit the scheme, even when set in
+`HTTPS_PROXY`. The launcher sends credentials from the proxy URL as
+`Proxy-Authorization`. For HTTPS requests, it opens a `CONNECT`
+tunnel and verifies the origin's TLS certificate through it. See
+[network allowlists](#network-allowlists) for requests that require a
+direct connection.
+
+**Sockets grant.** Configure the proxy in the guest HTTP client. With Req,
+use `connect_options: [proxy: {:http, "proxy.internal", 3128, []}]`.
+Pass the address through `:env` if it varies. List the proxy's address
+and port in the socket allowlist. The proxy must enforce any rules for
+the destinations reached through it.
 
 See [HTTP and Req](running-applications.md#http-and-req) for how the grants
 select Req's adapter, and which CA certificates each uses. With the Elixir
@@ -364,20 +367,17 @@ exceeded, the scheduler kills other charged processes when they next
 account for reductions. The evaluator also attempts to kill descendants,
 as it does on timeout. Fuel and `max_lifetime` still apply to the whole VM.
 
-Reduction counts can be repeatable for single-process evaluations that
-start from the same state, receive the same inputs, and run the same code
-on the same runtime. The state includes the code the VM has loaded.
-On-demand loading can change the measured reduction count. Compare counts from evaluations that
-follow the same earlier evaluations on a fresh VM, or use `preload: true`.
-Wall-clock timeouts and external state can also affect how much work
-completes.
+To compare reduction counts for single-process evaluations, start fresh VMs
+with the same code and runtime and send each VM the same requests in order.
+Preloading reduces variation from on-demand loads. Wall-clock timeouts and
+external inputs can affect how much work completes.
 
 ## Controlled inputs
 
-To replay a run, start a fresh VM with the same code, runtime version, and
-configuration. Record the requests, their order, and the replies to
-guest host calls. Include any other input the program reads. Earlier
-requests can change the state that later requests see.
+Record the requests in order. For each host call, record its name,
+arguments, and reply. Capture any other inputs the guest reads. Replay
+those inputs in a fresh VM with the same code, runtime version, and
+configuration.
 
 Read the clock on the host and record the value with the request or
 reply. For random draws, record a seed and pass it to the guest. Use
@@ -385,20 +385,20 @@ reply. For random draws, record a seed and pass it to the guest. Use
 
 ```elixir
 {:ok, seed} = Kettlecorn.Host.call("seed")
-{roll, state} = :rand.uniform_s(6, :rand.seed_s(:exsss, seed))
+state = :rand.seed_s(:exsss, seed)
+{first, state} = :rand.uniform_s(6, state)
+{second, _state} = :rand.uniform_s(6, state)
 ```
 
-Send the recorded requests in order. At each host call, compare its name
-and arguments with the next recorded call before returning the recorded
-reply. At the end, check that every reply was used and compare the
-results. Wall-clock timers and inputs collected inside the guest can
-change a replay. The
-[Dune example](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#appsdune)
-restricts selected clock and random functions and draws from a supplied
-seed. Its example documentation also describes the cost of Dune's
-reduction polling. The
-[Lua example](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#appslua)
-takes the receipt time and code in each request.
+At each host call, match its name and arguments against the next recorded
+call before returning the recorded reply. Check that the replay used
+every reply and produced the expected results. Guest timers, concurrent
+processes, and reads from external services can change those results.
+
+The Dune example restricts clock reads and draws random numbers from a
+supplied seed. The Lua example supplies the receipt time and code with
+each request. See the
+[cooked examples](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#cooked-apps).
 
 ## Process isolation
 

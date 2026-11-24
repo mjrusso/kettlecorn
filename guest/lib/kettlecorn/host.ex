@@ -37,21 +37,22 @@ defmodule Kettlecorn.Host do
   @doc """
   Sends a named request to the host and waits for a reply.
 
-  Returns `{:ok, value}` or `{:error, reason}` from the host.
-  Set `:timeout` to change how long the guest waits for a reply. It defaults
-  to 5,000 ms. If the wait expires, the call returns `{:error, :timeout}`.
-  If the request fails the frame size check, it returns
-  `{:error, :frame_too_large}` before sending. After a call returns
-  `{:error, :timeout}`, the guest tells the host to cancel it and drops a
-  reply that arrives later. A call made while the guest's host-call process
-  isn't running, before the guest's applications start (for example from an
-  `@on_load` callback during preload) or while that process restarts, gets a
-  late reply in its mailbox instead, as `{:wasm, {token, result}}`, and
-  isn't cancelled if its caller exits. If that process stops while a call
-  waits, the call is cancelled and returns `{:error, :interrupted}`; the host
-  may already have handled it. A `:timeout` other than `:infinity` or an
-  integer from 0 to 4,294,967,295, the longest `receive` accepts, raises
-  `ArgumentError` before the call is sent.
+  Returns the host's `{:ok, value}` or `{:error, reason}`.
+  Set `:timeout` to `:infinity` or an integer from 0 to 4,294,967,295 ms.
+  It defaults to 5,000 ms. Invalid values raise `ArgumentError` before
+  sending. If the frame size check fails, the call returns
+  `{:error, :frame_too_large}`.
+
+  A timeout sends a cancellation notice and returns `{:error, :timeout}`.
+  When calls go through the reply router, the guest discards late replies
+  and cancels pending calls when their callers exit. If the router stops
+  during a call, the caller sends a cancellation notice and returns
+  `{:error, :interrupted}`. The host may already have handled the call.
+
+  Before the router starts, such as during a preload `@on_load` callback,
+  or while it restarts, replies go straight to the caller. A late reply
+  can remain in its mailbox as `{:wasm, {token, result}}`, and caller
+  exit sends no cancellation notice.
   """
   @spec call(String.t(), map(), timeout: timeout()) :: {:ok, term()} | {:error, term()}
   def call(name, args \\ %{}, opts \\ []) when is_binary(name) and is_map(args) do

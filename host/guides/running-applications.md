@@ -53,12 +53,13 @@ Choose the platform suffix:
 | ARM64 Linux | `aarch64-linux` |
 | Apple silicon macOS | `aarch64-darwin` |
 
-Extract the archive and add its `bin` directory to your PATH. For example,
-on x86_64 Linux:
+Set `archive` to the filename you downloaded. Extract it and add its
+`bin` directory to your PATH.
 
 ```sh
-tar -xzf kettlecorn-runtime-0.2.0-x86_64-linux.tar.gz
-export PATH="$PWD/kettlecorn-runtime-0.2.0-x86_64-linux/bin:$PATH"
+archive='kettlecorn-runtime-<version>-<system>.tar.gz'
+tar -xzf "$archive"
+export PATH="$PWD/${archive%.tar.gz}/bin:$PATH"
 kettlecorn-run --help
 ```
 
@@ -111,9 +112,10 @@ kettlecorn-run --max-memory 536870912 --fuel 50000000000 --timeout 30s script.ex
 module later loads on demand. See [preloading modules](sandbox.md#preloading-modules).
 
 Network and HTTP grants default to off. `--network` and `--http` allow any
-reachable destination; `--network-allow RULE` and `--http-allow RULE`,
-repeated, allow only the listed ones (see
-[network allowlists](sandbox.md#network-allowlists)). See
+reachable destination. To restrict a grant, replace its flag with
+`--network-allow RULE` or `--http-allow RULE`. Repeat the allowlist flag to
+add rules. Passing both forms for the same grant is an error. See
+[network allowlists](sandbox.md#network-allowlists),
 [sandbox and resource limits](sandbox.md) and [HTTP and Req](#http-and-req)
 for grant and certificate behavior.
 
@@ -177,23 +179,25 @@ _kettlecorn
 _kettlecorn.versions/
 ```
 
-The cook writes `_kettlecorn` by default. It selects a runtime from
+The task writes to `_kettlecorn` by default. It selects a runtime from
 `--runtime`, `KETTLECORN_RUNTIME`, the `:runtime` application setting, or
-the installed cache, in that order. It checks that the compiler matches
-and that the runtime supplies required dependencies missing from the
-bundle. An invalid selected runtime fails the cook. If there is no
-configured or cached runtime, the task prints a message and continues.
+the installed cache, in that order. The compiler's Elixir version and OTP
+major release must match the runtime, and the runtime must provide any
+required dependencies absent from the bundle. If no runtime is configured
+or installed, the task prints a message and continues without these checks.
+If the selected runtime is invalid, the task stops with an error.
 The `runtime: false` dependency keeps the host library out of the guest bundle.
 
 ### Bundle compatibility
 
-Cooking writes `kettlecorn.json` with the compiler's OTP major, exact Elixir
-version, and protocol version. The task validates the selected runtime
-and compiler before replacing the bundle symlink. The host checks bundles
-before copying them.
-Guest boot validates the copied metadata for both host VMs and the CLI before
-loading cooked code. Extra metadata fields are rejected too. Rebuild bundles
-after upgrading the protocol or compiler.
+Cooking writes `kettlecorn.json` with the compiler's OTP major release,
+exact Elixir version, and the Kettlecorn protocol version. The cook task
+checks the selected runtime before replacing the bundle symlink.
+
+The Elixir host checks the file before copying the bundle. Each guest
+checks it again at boot and rejects extra fields before loading cooked
+code. Rebuild the bundle when the runtime's protocol version, OTP major
+release, or Elixir version changes.
 
 See [published directories](architecture.md#published-directories) for atomic
 replacement, retained generations, and migration of an existing ordinary
@@ -297,23 +301,30 @@ symlink and its target directories must travel together in the release.
 config :kettlecorn, runtime: Application.app_dir(:my_app, "priv/kettlecorn")
 ```
 
-The runtime can be read-only: each VM uses a private writable copy of the
-guest files. The launcher caches compiled components in a private per-user
-directory; see [compilation cache](sandbox.md#compilation-cache).
-Start and stop a VM as the deployment user to warm it before serving requests.
+The runtime can be read-only because each VM uses a private writable copy
+of the guest files.
 
-`mix kettlecorn.install` and `Kettlecorn.Install.runtime/1` download
-through the proxy in `https_proxy` or `HTTPS_PROXY` (`http_proxy` or
-`HTTP_PROXY` for an `http://` mirror), skipping hosts in `no_proxy` or
-`NO_PROXY`; credentials in the proxy URL are sent to the proxy.
-`Runtime::install` in Rust uses the proxy variables its HTTP client reads,
-`ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY`.
+### Runtime downloads
+
+To download archives from your own mirror, set the `:release_base_url`
+application setting. The installer requests
+`<release_base_url>/v<version>/<archive>`.
+
+`mix kettlecorn.install` and `Kettlecorn.Install.runtime/1` use
+`https_proxy` or `HTTPS_PROXY` for HTTPS downloads and `http_proxy` or
+`HTTP_PROXY` for HTTP downloads. The proxy address itself must use
+`http://` or omit the scheme. Loopback hosts and entries in `no_proxy` or
+`NO_PROXY` use a direct connection. The installer sends any credentials
+from the proxy URL to the proxy.
+
+The Rust installer uses ureq's proxy settings. It checks `ALL_PROXY`,
+`HTTPS_PROXY`, `HTTP_PROXY`, and their lowercase forms. Hosts listed in
+`NO_PROXY` or `no_proxy` bypass the proxy.
 
 ## Offline deployment
 
-Runtime discovery and VM startup use files already on disk. Guest
-network access depends on its grants. Install the runtime and fetch your
-application's dependencies before deploying to an offline host.
+Runtime discovery and VM startup use local files. Install the runtime
+and fetch your application's dependencies before deploying offline.
 
 ### Installing from an archive
 
@@ -326,54 +337,48 @@ the [GitHub release](https://github.com/mjrusso/kettlecorn/releases) for
 $ mix kettlecorn.install --archive 'kettlecorn-runtime-<version>-<system>.tar.gz'
 ```
 
-`<version>` is the Hex package's version and `<system>` the target, such as
-`x86_64-linux`. Add `--dir` to install elsewhere than the user cache.
+`<version>` is the Hex package's version and `<system>` is the target
+platform, such as `x86_64-linux`. Use `--dir` to choose an installation
+directory.
 
-Both installers reuse a compatible cached runtime without reading the
-archive. When installing from a file, the Elixir installer checks its SHA-256 in the Hex package, as it
-does a download, so the archive must match the library's version and the
-host platform. In Rust, `Runtime::install_from_archive(path)` installs it
-into the user cache with the crate's checksum; or extract it anywhere and
-load it with `Runtime::load(path)`, which doesn't check the archive. To serve archives from your own
-network instead, configure `:release_base_url` with the release layout.
+For Rust, enable the `installer` feature and call
+`Runtime::install_from_archive(path)` with the archive matching the crate
+version. Both installers reuse a compatible cached runtime without
+reading the archive. On a fresh install, they verify the archive against
+the SHA-256 bundled for the target platform.
 
 For Docker, use the [Docker recipe](#deploying) with `--archive`.
 
 ### Nix
 
-The flake builds the runtime as a package. Point `KETTLECORN_RUNTIME` at
-its output:
+Build the runtime from the same release tag or source checkout as your
+host library. Point `KETTLECORN_RUNTIME` at the output:
 
-```console
-$ nix build github:mjrusso/kettlecorn/v0.2.0#runtime --print-out-paths
+```sh
+nix build .#runtime
+export KETTLECORN_RUNTIME="$PWD/result"
 ```
 
 `#kettlecorn-run` is the CLI, and `#release` builds the platform archive.
-Use the [binary cache](development.md#binary-cache); building the runtime
-from source compiles OTP. To deploy to a host without network access, copy
-the build's closure there with `nix copy --to ssh://host <store path>`.
+Use the [binary cache](development.md#binary-cache) to avoid compiling OTP
+locally. To transfer the runtime and its dependencies to a Nix host that
+cannot fetch them itself, run `nix copy --to ssh://host .#runtime`.
 
 ### Cooking without network access
 
-Cooking doesn't download anything, but building the app needs its Hex
-dependencies. Fetch them in a step with network access, or fill Hex's
-cache ahead of time and set `HEX_OFFLINE=1`.
+Cooking uses local files. To build an app offline, fetch its Hex
+dependencies before entering the offline environment, or populate Hex's
+cache in advance and set `HEX_OFFLINE=1`.
 
 ### The compilation cache
 
-The first VM start on a host compiles the runtime's WebAssembly components
-to native code, which makes it slower than later starts, and caches the
-result in the
-[compilation cache](sandbox.md#compilation-cache). A cache entry is valid
-only for the same runtime, Wasmtime version and CPU features. A cache
-built on a host with a different CPU is not used: the VM compiles again.
+The launcher reuses compiled code when the component and Wasmtime's
+engine compatibility key match. The key includes engine settings and CPU
+features. A cache miss triggers compilation.
 
-To ship a warm cache in an image, warm it in the image build as the user
-that runs the application and with the same `XDG_CACHE_HOME`, and deploy
-the image only to hosts with the same CPU features, in practice the same
-CPU model. The cache directory must
-stay owned by that user with no group or other permissions. Otherwise,
-warm the cache when the container or host starts, before serving requests.
+To warm the [compilation cache](sandbox.md#compilation-cache), start and
+stop a VM as the deployment user with the cache path and VM options it
+will use in production. Keep the cache private to that user.
 
 ## Troubleshooting
 

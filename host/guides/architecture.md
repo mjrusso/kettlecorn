@@ -57,23 +57,17 @@ input for scripts. The stdin watcher explicitly requests `POLLHUP`, which macOS
 requires to report closure with unread input. The launcher atomically
 publishes a JSON termination record before it exits. The record identifies
 exit, cancellation, timeout, fuel exhaustion, or failure, and holds the final
-stats. Stderr supplies diagnostics; guest fatal frames retain priority.
+stats. A guest fatal frame takes precedence over the termination record.
 
-Stopping has three steps, in order:
+The host confirms shutdown when the launcher exits. If the host closes the
+port first, it waits up to five seconds for the termination record as
+confirmation. It then sends the owner `{:stopped, stats}`, with `nil` for
+stats if there is no record.
 
-1. The host waits for shutdown. It's confirmed when the launcher has exited,
-   or when the host closed the port and the termination record appeared
-   within five seconds. Otherwise the shutdown is unconfirmed.
-2. The host sends the owner `{:stopped, stats}`, with the record's stats, or
-   `nil` when there is no record, as after an unconfirmed shutdown. The owner
-   may process the event after cleanup.
-3. After a confirmed shutdown, the host removes the VM's private directory
-   with one `rm -rf`, and logs the path and `rm`'s error if removal fails.
-   `File.rm_rf/1` is used only when `rm` can't be started: removing the
-   root's files one at a time from the BEAM takes seconds on a busy machine.
-   An unconfirmed shutdown keeps the directory and logs its path.
-
-`Kettlecorn.stop/1` returns, and the VM process exits, after step 3.
+The host removes the private directory after sending the event if shutdown
+was confirmed. It logs the path if cleanup fails or if it keeps the directory
+because shutdown could not be confirmed. `Kettlecorn.stop/1` waits for this
+step before returning.
 
 The termination record is outside the guest root. Stderr does not determine
 the outcome; a missing result falls back to the process exit status.
@@ -173,25 +167,21 @@ cannot be decoded, the client can send an error when it has a valid reply
 token and room in the rejection queue. If the queue is full, the guest call
 can time out.
 
-`Kettlecorn.Host.call/3` registers each call with the guest's
-`Kettlecorn.HostCalls` process under a process alias of the caller. The
-reply token holds both, so host replies reach that process first, and it
-passes each one to the call's alias. When the call times out, the caller
-retires the alias, which drops any later reply, sends a
-`host_call_cancel` envelope with the call's reply token, and tells
-`Kettlecorn.HostCalls`, without waiting, to forget the call.
-`Kettlecorn.HostCalls` sends the envelope when the caller exits first. The
-caller monitors `Kettlecorn.HostCalls`: if it stops, the reply can't
-arrive, so the caller cancels the call and returns `{:error, :interrupted}`
-without sending it again. While that process isn't running, before the
-guest's applications start (as when preload runs an `@on_load` callback) or
-while it restarts, the reply token names the caller, and replies go to it
-directly. The process runs
-outside evaluations, so a reduction budget that stops the caller doesn't
-stop it. The Rust client aborts the callback with that token, which releases
-its slot, and sends a callback's result only while that callback's task is
-the token's entry. Both clients drop a call whose token matches a call in
-progress.
+The guest's `Kettlecorn.HostCalls` process routes replies to caller aliases.
+The reply token contains the router PID and the alias. On timeout the
+caller deactivates its alias and sends the cancellation notice itself,
+so the notice goes out before its next call. The router sends notices
+when callers exit. It runs outside evaluation budgets so it can still
+send a notice when a budget kills the caller.
+
+If the router stops with a call pending, the caller cancels the request
+and returns `{:error, :interrupted}` without retrying it. Before the
+router starts or while it restarts, the token identifies the caller
+directly. See [cancellation and late replies](guest-api.md#cancellation-and-late-replies).
+
+The Rust client aborts a cancelled callback and releases its slot. A
+result is sent only if its task still owns that reply token. Rust and
+Elixir with handlers drop requests that reuse a live token.
 
 The Elixir VM assigns an ID to each handled call. A reply must match a
 live ID, even if the guest reuses the original token. Function handlers run
@@ -229,9 +219,9 @@ the linear memory allocated. Fuel is metered only when `max_fuel` is set. A
 call hook samples both each time the guest calls into the host, the epoch
 callback samples them on every tick, and the store samples them when it is
 dropped, including when cancellation drops a running execution. The
-resource limiter holds an allowed memory growth until the next sample or
-growth, so a growth that Wasmtime fails to allocate is never reported. The
-memory figure excludes compiled code and Wasmtime's own allocations.
+resource limiter records a pending allocation and adds it to the linear
+memory total only after Wasmtime succeeds. The memory figure excludes
+compiled code and Wasmtime's own allocations.
 
 The launcher publishes the same counts for `Kettlecorn.stats/1` in a
 mapped file in the VM's private directory (`--stats`). Its termination
@@ -260,10 +250,10 @@ runtime's launch files. Embedded Rust VMs also set
 `KETTLECORN_MAX_GUEST_FRAME_BYTES` to advertise the frame size limit to the guest.
 `Kettlecorn.Boot.start/0` reads the applications from the `-kettlecorn_apps`
 init argument and applies the cooked configuration before starting them.
-With `-kettlecorn_preload on` or `strict`, `Kettlecorn.Preload` then loads
-each module that `code:all_available/0` lists, sorted by name, with
-`code:ensure_loaded/1`. OTP chooses each module's file from the code path,
-and a module that an earlier `on_load` function loaded is skipped.
+With `-kettlecorn_preload on` or `strict`, `Kettlecorn.Preload` lists unloaded
+modules with `code:all_available/0` and calls `code:ensure_loaded/1` in name
+order. A module's `on_load` callback can load another module before its turn.
+A load failure aborts boot in either mode.
 `code:prepare_loading/1` and `code:ensure_modules_loaded/1` prepare modules
 in parallel, which would make the atom table's order vary, so preload loads
 one module at a time. Without framing, late loads are reported on stderr,
@@ -351,9 +341,9 @@ and emulator flags. The feature patches add these integration points:
   starting the bridge; upgrading takes over those resources. Native
   bootstrap builds register only `send_raw/1`, which reports unsupported
   sends. Popcorn's browser implementation is compiled only for Emscripten.
-* The copied `c/otp/wasm.erl` encodes envelopes with `term_to_binary/1` and returns host-call
-  result tuples unchanged. `host_call/3` sends a `host_call` envelope with `name`,
-  `args`, and `reply_to` fields. It adds `getaddrinfo/2` and `http_*` functions.
+* The copied `c/otp/wasm.erl` encodes envelopes with `term_to_binary/1` and
+  exposes `getaddrinfo/2` and the `http_*` functions. Guest code in
+  `Kettlecorn.HostCalls` builds the host-call envelopes.
 * The inet driver is compiled in and uses wasi-libc's `wasi:sockets` support.
   `prim_inet` opens sockets through that driver. The copied
   `c/otp/inet_gethost_native.erl` calls the DNS NIF directly, without a helper
@@ -366,16 +356,13 @@ and emulator flags. The feature patches add these integration points:
   `c/src/platform.c` owns the busy scheduler's yield counter and interval.
 * `prim_tty.erl` supports raw terminal mode without terminfo
   (see [Interactive IEx](#interactive-iex)).
-* `code_server.erl` marks the loader action of a load that arrives from
-  `code:ensure_loaded/1`, which autoloading also uses, and keeps the mark
-  in its `on_load` record while an `on_load` function runs. Once that load
-  has succeeded, it sends `{kettlecorn_late_load, Module}` to the pid stored
-  under the `persistent_term` key `kettlecorn_late_load`. A load that fails
-  is not reported. The hook only reads the term and sends a message, so it
-  cannot itself need the code server. A
-  `{kettlecorn_late_load_barrier, Ref}` request sends the pid a barrier
-  message after the reports before it. `Kettlecorn.Preload` stores the pid
-  after preloading (see [preloading modules](sandbox.md#preloading-modules)).
+* `code_server.erl` reports successful on-demand loads. If a module has
+  an `on_load` callback, the report waits for it to succeed. The hook reads the
+  reporter pid from `persistent_term` and sends a message without calling
+  back into the code server. A barrier message follows all reports sent
+  before the code server handles the barrier request.
+  `Kettlecorn.Preload` registers the reporter after
+  [preloading modules](sandbox.md#preloading-modules).
 * `erl_process.h` gives each process a pointer to a reduction budget in
   `c/nif/kettlecorn_budget.c`. `erl_process.c` copies the parent's pointer
   when it creates a process, releases it in `erts_free_proc`, and charges

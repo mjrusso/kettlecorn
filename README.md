@@ -8,8 +8,8 @@
 ***This is your BEAM on WASI.***
 
 Kettlecorn runs untrusted Elixir and Erlang in a WebAssembly sandbox.
-Use it from Elixir or Rust to isolate user code, plugins, or whole Mix
-applications.
+Run scripts from the command line, launch a VM from Elixir, or embed one in
+Rust. Use a VM to isolate user code, plugins, or whole Mix applications.
 
 > [!WARNING]
 >
@@ -26,14 +26,13 @@ Each VM runs OTP 29 and Elixir 1.20 in [Wasmtime](https://wasmtime.dev) with a
 private filesystem. The Elixir API and CLI run VMs in separate launcher
 processes. The Rust crate runs VMs inside your application process.
 
-VMs retain modules, processes, and state across evaluations. Start supervised
-processes, call guest GenServers, exchange messages, and expose selected
-host operations.
+Modules and processes persist across evaluations. Start supervised workers,
+call guest GenServers, exchange messages, and give guest code access to
+selected host functions.
 
-Network access is off by default. Set `max_memory` to cap guest memory,
-`max_fuel` to limit execution, and `max_lifetime` to bound elapsed time. Fuel
-is measured roughly in WebAssembly instructions; fuel and lifetime limits
-cover guest startup and all evaluations.
+Network access is off by default. Enable sockets or HTTP and use destination
+allowlists to restrict where the guest can connect. See
+[network allowlists](host/guides/sandbox.md#network-allowlists).
 
 ## Getting started
 
@@ -62,14 +61,16 @@ Kettlecorn.eval(vm, ~S|IO.puts("hi"); Enum.map(1..3, fn n -> {n, n * n} end)|)
 #=> {:ok, %{
 #     "value" => [{1, 1}, {2, 4}, {3, 9}],
 #     "inspected" => "[{1, 1}, {2, 4}, {3, 9}]",
-#     "output" => "hi\n"
+#     "output" => "hi\n",
+#     "reductions" => ...
 #   }}
 
 Kettlecorn.stop(vm)
 ```
 
-Here, `"value"` is the result, `"inspected"` is its text representation, and
-`"output"` is captured stdout.
+Here, `"value"` is the result, `"inspected"` is its text representation,
+`"output"` is captured stdout, and `"reductions"` counts work charged to the
+evaluation.
 
 From your Mix project, run an `.exs` script directly in the sandbox:
 
@@ -95,28 +96,36 @@ Add `kettlecorn` with its optional runtime installer:
 cargo add kettlecorn --features installer
 ```
 
-Call `Runtime::install()` from synchronous code to download and verify the
-matching runtime, or reuse one already installed. After installation, load
-the runtime with `Runtime::find` and use the async API from Tokio:
+Call `Runtime::install` before entering Tokio. It downloads and verifies
+the matching runtime if that version is absent from the cache.
+
+```rust
+kettlecorn::Runtime::install()?;
+```
+
+Load the installed runtime and start a VM from Tokio:
 
 ```rust
 use kettlecorn::{EvalOptions, Runtime, VmOptions};
 
 let runtime = Runtime::find()?;
+
 let mut options = VmOptions::default();
 options.max_fuel = Some(50_000_000_000);
 options.max_lifetime = Some(std::time::Duration::from_secs(30));
+
 let vm = runtime.start(options).await?;
 let evaluation = vm.eval("Enum.sum(1..10)", EvalOptions::default()).await;
+
 vm.shutdown().await.result?;
 println!("{}", evaluation?.result?.inspected);
 ```
 
-The [Rust quickstart](rust/README.md#quickstart) includes a complete program
-and dependencies. Running guest code requires no host Elixir installation.
-See [runtime setup and deployment](rust/README.md#runtime-setup-and-deployment)
-for bundled runtimes and offline discovery, and the
-[API documentation][kettlecorn-rust-docs] for reference.
+This prints `55`. The [Rust quickstart](rust/README.md#quickstart) includes
+the full program and its dependencies. See
+[runtime setup and deployment](rust/README.md#runtime-setup-and-deployment)
+for offline installation and the [Rust API reference][kettlecorn-rust-docs]
+for embedding options.
 
 ### In Livebook
 
@@ -148,7 +157,8 @@ nix run .#kettlecorn-run -- examples/01_hello.exs one two
 ## Examples
 
 The [examples guide](examples/README.md) includes scripts, cooked Mix apps,
-and instructions for these Rust projects:
+and Rust projects. The [Lua and Dune apps](examples/README.md#cooked-apps)
+show how to supply time and randomness from the host.
 
 | Example | Demonstrates |
 |---|---|
@@ -160,16 +170,15 @@ and instructions for these Rust projects:
 
 | Guide | Covers |
 |---|---|
-| [Sandbox and resource limits](host/guides/sandbox.md) | Isolation, fuel, memory, output, disk use, and network grants |
-| [Running applications](host/guides/running-applications.md) | CLI installation and usage, cooking Mix apps, deployment, HTTP, and IEx |
+| [Sandbox and resource limits](host/guides/sandbox.md) | VM limits and stats, preloading, evaluation budgets, and network allowlists |
+| [Running applications](host/guides/running-applications.md) | CLI usage, cooking Mix apps, offline deployment, HTTP, and IEx |
 | [Guest API](host/guides/guest-api.md) | Guest messages, host calls, HTTP requests, and streaming |
 | [Architecture](host/guides/architecture.md) | Host and guest processes, threads, OTP patches, framing, and Popcorn |
 | [Development](host/guides/development.md) | Nix setup, binary cache, build stages, checks, and pinned versions |
 | [Performance](host/guides/performance.md) | Startup behavior and local benchmark instructions |
 
-The [internals notebook](host/notebooks/internals.livemd) examines the
-implementation. The [cooked Lua and Dune examples](examples/README.md#cooked-apps)
-show how to supply inputs from the host.
+The [internals notebook](host/notebooks/internals.livemd) walks through the
+launcher command, guest filesystem, and message frames.
 
 ## Contributing
 

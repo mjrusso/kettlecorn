@@ -22,11 +22,14 @@ Requires Elixir 1.20 or later on x86_64 or ARM64 Linux or Apple silicon macOS.
 The VM has a ten-minute lifetime for this interactive session. Restart from
 this cell if it expires. `owner: self()` sends guest messages and host calls
 to this process; host applications must keep consuming these events.
+`preload: true` loads modules on the guest's code path at boot and reports
+later on-demand loads to the same owner.
 
 ```elixir
 {:ok, vm} =
   Kettlecorn.start_link(
     owner: self(),
+    preload: true,
     max_memory: 256 * 1024 * 1024,
     max_fuel: 1_000_000_000_000,
     max_lifetime: 600_000
@@ -66,7 +69,6 @@ Calling an unregistered name returns an error:
 The guest sends messages to the host with `Kettlecorn.Host.send/1`. They
 arrive at the owner as `{:kettlecorn, vm, {:message, term}}`. The owner
 acknowledges each guest event after handling it to release its delivery budget.
-The final `{:stopped, stats}` event needs no acknowledgement.
 The host sends
 `{:wasm, payload}` to a guest process with `Kettlecorn.send/4`:
 
@@ -112,10 +114,11 @@ end
 {:ok, %{"value" => {:ok, 42}}} = Task.await(task)
 ```
 
-If the guest stops waiting for a call, the owner receives
-`{:host_call_cancel, reply_to}`. Stop any pending work for that token and
-acknowledge the event. [Use cases](use-cases.livemd#give-the-guest-controlled-access)
-shows how to have Kettlecorn manage calls with named handlers.
+When the guest sends a cancellation notice, the owner receives
+`{:kettlecorn, vm, {:host_call_cancel, reply_to}}`. Stop any pending work
+for that token and acknowledge the event. The guest sends notices on
+timeout and, while its reply router is running, on caller exit. See
+[cancellation and late replies](../guides/guest-api.md#cancellation-and-late-replies).
 
 ## Returned guest values
 
@@ -189,10 +192,51 @@ Results are inspected and errors formatted as Erlang does:
 IO.puts(message)
 ```
 
-## Stop the VM
+## Receive a late-load event
+
+Add a directory to the guest's code path after boot, then call a module
+from that directory. The code server loads the module on demand and
+Kettlecorn reports it to the owner.
 
 ```elixir
-Kettlecorn.stop(vm)
+code = ~S"""
+source = "-module(kettlecorn_late).\n-export([answer/0]).\nanswer() -> 42.\n"
+File.mkdir_p!("/tmp/late")
+File.write!("/tmp/late/kettlecorn_late.erl", source)
+{:ok, :kettlecorn_late, beam} = :compile.file(~c"/tmp/late/kettlecorn_late.erl", [:binary])
+File.write!("/tmp/late/kettlecorn_late.beam", beam)
+true = :code.add_patha(~c"/tmp/late")
+:kettlecorn_late.answer()
+"""
+
+{:ok, %{"value" => 42}} = Kettlecorn.eval(vm, code)
+
+receive do
+  {:kettlecorn, ^vm, {:late_load, "kettlecorn_late" = module}} ->
+    Kettlecorn.acknowledge(vm)
+    module
+after
+  5_000 -> raise "VM did not report the module load"
+end
+```
+
+Start a fresh VM to see the event again. See
+[preloading modules](../guides/sandbox.md#preloading-modules) for strict mode.
+
+## Stop the VM
+
+The owner receives the final fuel and memory after shutdown. The
+`{:stopped, stats}` event needs no acknowledgement. If the launcher
+exits without reporting stats, the event carries `nil`.
+
+```elixir
+:ok = Kettlecorn.stop(vm)
+
+receive do
+  {:kettlecorn, ^vm, {:stopped, stats}} -> stats
+after
+  5_000 -> raise "VM did not send a stop event"
+end
 ```
 
 [Use cases](use-cases.livemd) builds services around these APIs. The

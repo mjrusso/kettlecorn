@@ -2,40 +2,46 @@
 
 ## Unreleased
 
-* **Breaking:** install a runtime that supports protocol version 2.
-* **Breaking:** `Vm::shutdown` returns a `Shutdown` containing the final
-  stats and the result. Replace `vm.shutdown().await?` with
-  `vm.shutdown().await.result?`.
-* Add `Vm::stats`, which reports fuel consumed (when `max_fuel` is set) and
-  linear memory.
-* Add `VmOptions::preload`. `Preload::On` loads every module on the code path
-  while the VM boots and sends the names of modules loaded on demand
-  afterwards to `VmOptions::late_loads`; `Preload::Strict` stops the VM on
-  such a load.
-* **Breaking:** Update `EvalOptions` struct literals with
-  `max_reductions: None` or `..Default::default()`. `Evaluation::reductions`
-  reports the charged count. When an evaluation exceeds the limit,
-  `Evaluation::result` holds a `ScriptError` with kind `reductions`.
-* A guest timeout or caller exit drops the host callback's future and
-  releases its `max_host_calls` slot.
-* **Breaking:** a host call to an unregistered name returns
-  `{:error, "no host handler"}` instead of
-  `{:error, "unknown host function"}`, the same reply as the Elixir host.
-* Launcher processes share cached compiled code. The first start after
-  upgrading recompiles the runtime.
-* Add `Runtime::install_from_archive`, which installs a release archive
-  already on disk into the cache, verified against the same checksum as a
-  download, for hosts without network access.
-* **Breaking:** `VmOptions::network` and `VmOptions::http` are a
-  `NetworkAccess` instead of a `bool`: `Denied`, `Any`, or
-  `Only(NetworkRules)`, which limits the grant to the listed host names,
-  addresses, address ranges and ports. Replace `true` with
-  `NetworkAccess::Any`. `NetworkRules::new` returns `None` for an empty list.
-* HTTP allowlists accept `public`. A hostname request allowed by its
-  resolved address requires a direct connection.
-* The HTTP grant sends guest requests through the proxy in the process's
-  `http_proxy`/`HTTP_PROXY` and `https_proxy`/`HTTPS_PROXY`, honoring
-  `no_proxy`/`NO_PROXY`; loopback hosts are reached directly.
+### Upgrading
+
+* Install a runtime that supports protocol version 2. Rebuild any cooked
+  apps for that runtime.
+* `VmOptions::network` and `VmOptions::http` now take `NetworkAccess`.
+  Replace `false` with `NetworkAccess::Denied` and `true` with
+  `NetworkAccess::Any`. Use `NetworkAccess::Only(rules)` to restrict
+  destinations to an allowlist.
+* `Vm::shutdown` returns a `Shutdown` with final stats and the result.
+  Replace `vm.shutdown().await?` with `vm.shutdown().await.result?`.
+* Update `EvalOptions` struct literals with `max_reductions: None` or
+  `..Default::default()`. Add `reductions` or `..` to exhaustive
+  `Evaluation` patterns.
+* Update checks for the unregistered host function error to match
+  `"no host handler"`. The previous message was `"unknown host function"`.
+* Guest HTTP requests now honor the process's proxy settings. Review them
+  if you rely on direct connections. When a hostname is allowed by its
+  resolved address, the launcher must connect directly.
+
+### New capabilities
+
+* Set `EvalOptions::max_reductions` to limit work per evaluation. Read the
+  charged count from `Evaluation::reductions`. When the evaluation exceeds
+  the limit, `Evaluation::result` holds a `ScriptError` with kind `reductions`.
+* Read live linear memory and fuel consumed with `Vm::stats`. Fuel is
+  available when `max_fuel` is set. `Vm::shutdown` returns final stats.
+* Set `VmOptions::preload` to `Preload::On` to load modules at boot and
+  report subsequent on-demand loads through `VmOptions::late_loads`, when
+  configured. `Preload::Strict` also stops the VM on such a load.
+
+### Runtime and tooling
+
+* When the guest cancels a pending host call, the VM drops the callback's
+  future and releases its `max_host_calls` slot.
+* When guest execution ends, the embedded VM gives buffered guest frames
+  and stderr up to one second to drain.
+* Install offline with `Runtime::install_from_archive(path)`. On a fresh
+  install it verifies the archive against the checksum bundled with the crate.
+* Launcher processes share cached compiled code. Each component in the
+  old cache is compiled again on first use.
 
 ## 0.2.0
 

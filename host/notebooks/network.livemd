@@ -139,20 +139,36 @@ for {grant, expected_result} <- expected do
 end
 ```
 
-## Limit HTTP destinations
+## Limit destinations
 
-Allow the local test server by IP address and port. The `:public` rule
-allows public addresses and denies this loopback URL.
+Allow the local test server by IP address and port. Use the same rule for
+the HTTP and sockets grants. The `:public` rule excludes the loopback
+address.
 
 ```elixir
+destination = "127.0.0.1:#{port}"
 http_get = ~s<Kettlecorn.HTTP.request(:get, "#{url}")>
+
+tcp_connect = """
+case :gen_tcp.connect({127, 0, 0, 1}, #{port}, [], 2_000) do
+  {:ok, socket} -> :gen_tcp.close(socket)
+  error -> error
+end
+"""
+
 limits = [max_fuel: 100_000_000_000, max_lifetime: 30_000, timeout: 10_000]
 
 {:ok, %{"value" => {:ok, %{status: 200}}}} =
-  Kettlecorn.run(http_get, [http: [allow: ["127.0.0.1:#{port}"]]] ++ limits)
+  Kettlecorn.run(http_get, [http: [allow: [destination]]] ++ limits)
 
 {:ok, %{"value" => {:error, :http_request_denied}}} =
   Kettlecorn.run(http_get, [http: [allow: [:public]]] ++ limits)
+
+{:ok, %{"value" => :ok}} =
+  Kettlecorn.run(tcp_connect, [network: [allow: [destination]]] ++ limits)
+
+{:ok, %{"value" => {:error, :eacces}}} =
+  Kettlecorn.run(tcp_connect, [network: [allow: [:public]]] ++ limits)
 
 :gen_tcp.close(listener)
 ```

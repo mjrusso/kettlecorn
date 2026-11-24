@@ -1,14 +1,12 @@
 defmodule Kettlecorn.Install do
   @moduledoc """
-  Installs the native runtime for this platform from a GitHub release.
+  Installs the native runtime and launcher for this platform.
 
-  `runtime/1` downloads `kettlecorn-runtime-<version>-<system>.tar.gz`, or
-  reads it from `:archive`, and verifies its SHA-256 against the package's
-  `priv/checksums.txt`. Configure `:release_base_url` for a mirror with the
-  same release layout. Downloads use the proxy in `https_proxy` or
-  `HTTPS_PROXY` (`http_proxy` or `HTTP_PROXY` for an `http://` mirror),
-  except for hosts in `no_proxy` or `NO_PROXY`. The archive includes the launcher; no separate
-  Wasmtime installation is needed.
+  `runtime/1` downloads the runtime from GitHub or reads a local release
+  archive. It verifies new installations against the bundled checksums.
+  Configure `:release_base_url` to use a mirror with the same release layout.
+  See [runtime downloads](running-applications.html#runtime-downloads) for
+  proxy settings.
   """
 
   require Logger

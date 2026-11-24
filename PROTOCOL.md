@@ -81,39 +81,37 @@ from protocol data.
 length limit and output policy for unframed mode. The bridge handles frame
 payloads and message delivery.
 
-`message` frames carry the ETF envelope
-`%{type: :vm_message, data: term}`, produced by `:wasm.send/1`
-(`Kettlecorn.Host.send/1`). A host call,
-`Kettlecorn.Host.call(name, args)` sends
-`%{type: :host_call, name: name, args: args, reply_to: binary}`;
-the host answers by sending `{:ok, value}` or `{:error, reason}` to the
-pid target `reply_to`, which hosts treat as opaque. While the guest's
-`Kettlecorn.HostCalls` process runs, `reply_to` names it, and it passes the
-reply to the caller while the call is live. While it isn't running, before
-the guest's applications start (as when preload runs an `@on_load`
-callback) or while it restarts, `reply_to` names the caller. The guest
-returns the result tuple unchanged, `{:error, :timeout}` if no reply is
-delivered before the call's timeout, or `{:error, :interrupted}` if
-`Kettlecorn.HostCalls` stops while the call waits; the host may already
-have handled that call.
-Host error reasons are binaries, so the guest can distinguish host errors
-from its own `{:error, :timeout}`. Both hosts answer a request whose name
-isn't a UTF-8 binary or whose `args` isn't a map with
-`{:error, "invalid or oversized host call arguments"}`, and ignore a
-request whose `reply_to` is longer than 256 bytes. The Rust host, and
-the Elixir host with handlers, drop a request whose `reply_to` matches a
-call still in progress, since the reply would reach that call's caller.
+`message` frames carry ETF envelopes for guest messages, host calls, and
+host-call cancellation notices.
 
-When the call times out, or the calling process exits before the reply, the
-guest sends `%{type: :host_call_cancel, reply_to: binary}`, with the call's
-`reply_to`. It also sends it for an interrupted call. The host can stop
-work on the call. The guest drops a reply sent afterwards, except for a
-call whose `reply_to` names the caller: its late reply reaches the caller's
-mailbox. `Kettlecorn.HostCalls` watches the callers of the calls it passes
-replies for, and sends the notice for one that exits; a call whose
-`reply_to` names the caller gets no notice if the caller exits. A host can receive a notice after it has replied. Rust and Elixir handlers
-ignore notices for calls they are no longer tracking. In Elixir's manual
-delivery mode, the owner receives the notice.
+* `Kettlecorn.Host.send/1` sends `%{type: :vm_message, data: term}` through
+  `:wasm.send/1`.
+* `Kettlecorn.Host.call/3` sends
+  `%{type: :host_call, name: name, args: args, reply_to: binary}`.
+  The host uses the opaque `reply_to` token as the destination of its reply.
+  The reply is `{:ok, value}` or `{:error, reason}` with a binary reason.
+
+With `Kettlecorn.HostCalls` running, `reply_to` targets that process. It
+forwards the result to the caller and sends a cancellation notice if
+the caller exits with a call pending. The guest discards late replies. Before
+the router starts or while it restarts, `reply_to` targets the caller
+directly. The caller can receive a late reply in its mailbox, and its
+exit sends no cancellation notice.
+
+A caller that times out sends a cancellation notice and returns
+`{:error, :timeout}`. If the router stops while the caller waits,
+the caller sends the notice and returns `{:error, :interrupted}`. The host
+may already have handled the call.
+The notice is `%{type: :host_call_cancel, reply_to: binary}` with the
+original reply token. Rust and Elixir handlers ignore notices for
+calls they no longer track. In Elixir's manual mode, the owner receives
+the notice.
+
+Both hosts ignore reply tokens longer than 256 bytes. They can answer
+a request whose name is invalid UTF-8 or whose arguments are not a map
+with `{:error, "invalid or oversized host call arguments"}`. The Rust
+host and Elixir hosts with handlers drop requests that reuse a live
+reply token, since a reply would reach the original caller.
 
 `Kettlecorn.reply/3` queues the reply without confirming delivery. A reply
 containing an atom absent from the guest's atom table is rejected; the
@@ -148,10 +146,10 @@ supports evaluation value limits. When a proxy reply exceeds the advertised
 frame limit, the proxy sends `{:error, :frame_too_large}` with the original
 request ID. The Elixir host and CLI check the shared protocol version.
 
-Guest envelopes use atom keys (`wasm.erl` builds them). The host uses string
-keys for proxy requests and evaluation options because
-the guest decodes them without creating atoms. User payloads may contain
-atoms already loaded in the guest. The host drops unknown envelope types.
+Guest envelopes use atom keys. Proxy requests and evaluation options use
+string keys because the guest decodes them without creating atoms. User
+payloads may contain atoms already loaded in the guest. The host drops
+unknown envelope types.
 
 Treat every guest frame as untrusted. Guest code can put arbitrary bytes
 into a message frame and forge events from `Kettlecorn.Boot` or
@@ -307,15 +305,15 @@ is all zeros, which is a valid record.
 The launcher updates the file when the guest calls the host, on every epoch
 tick while it runs, and when the execution ends. Memory growth appears once
 Wasmtime has allocated it. The termination record carries the final values.
-Updates can be continuous, so readers read the 24 bytes in one read and
-accept the values when the checksum matches, retrying otherwise.
+Read all 24 bytes at once and verify the checksum. Retry on a mismatch
+because an update may have overlapped the read.
 
 ## Launcher termination
 
-After dropping the guest, the native launcher atomically publishes a UTF-8 JSON
-object at `<stderr>.stopped`. The file is outside the guest root. Its publication
-also confirms that cleanup may remove the private root. The object has one of
-these shapes:
+With `--stderr PATH`, the native launcher atomically writes a UTF-8 JSON
+object to `PATH.stopped` after execution ends. The Elixir host puts this
+file outside the guest root and uses it to confirm the private root can
+be removed. The `outcome` field and its associated fields are:
 
 ```json
 {"outcome":"exited","code":0}

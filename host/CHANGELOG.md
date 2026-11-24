@@ -2,57 +2,56 @@
 
 ## Unreleased
 
-* **Breaking:** protocol version 2. The library refuses earlier runtimes:
-  install the matching runtime with `mix kettlecorn.install` and cook
+### Upgrading
+
+* Protocol version 2 requires a matching runtime. Install it with
+  `mix kettlecorn.install` or update your runtime bundle, then cook your
   applications again.
-* The guest drops a host-call reply that arrives after the call timed out
-  or its caller exited. An owner's late reply used to reach the caller's
-  mailbox as `{:wasm, {token, result}}`; it still does for a call made
-  before the guest's applications start, such as from an `@on_load`
-  callback during preload, or while the guest's host-call process restarts.
-  A call returns `{:error, :interrupted}` if that process stops while the
-  call waits.
-* `mix kettlecorn.cook` validates the runtime selected by `--runtime`,
-  `KETTLECORN_RUNTIME`, the `:runtime` application setting, or the
-  installed cache, in that order. With no runtime, it prints a message
-  and continues.
-* `Kettlecorn.ETF.to_json/1` converts decoded guest values to JSON-shaped
-  data, and returns an error for pids, references, ports, invalid UTF-8,
-  improper lists and keys that collide.
-* `Kettlecorn.stats/1` reports fuel use, linear memory, and launcher RSS
-  on Linux.
-* Owners receive `{:kettlecorn, vm, {:stopped, stats}}` when a VM stops.
-  The event contains final fuel and memory, or `nil` if the launcher
-  exited without reporting them.
-* `preload: true` loads the boot-time code path in a fixed order and
-  reports later on-demand loads to the owner as `{:late_load, module}`
-  events. `preload: :strict` also stops the VM on a late load.
-  The CLI supports `--preload on|strict` and reports late loads on stderr.
-* `Kettlecorn.eval/3` accepts `max_reductions` and reports charged
-  reductions in evaluation replies. An evaluation that exceeds the
-  limit fails with `"kind" => "reductions"`.
-* Answer guest host calls with named functions (`:handlers`) or a stateful
-  `Kettlecorn.HostHandler` (`:handler`). `:max_host_calls` defaults to four
-  and includes pending cancellations.
-* A guest timeout or caller exit cancels its host call. Owners handling
-  calls manually receive `{:kettlecorn, vm, {:host_call_cancel, reply_to}}`.
+* Guest HTTP requests now honor the launcher's
+  [proxy settings](guides/sandbox.md#proxies). Review them if you rely on
+  direct connections. When a hostname is allowed by its resolved address,
+  the launcher must connect directly.
+* `mix kettlecorn.cook` now finds and validates the configured or cached
+  runtime even without `--runtime`. An invalid or incompatible runtime
+  blocks cooking. See [runtime selection](guides/running-applications.md#cooking-mix-applications).
+
+### New capabilities
+
+* Restrict sockets or HTTP to specific hostnames, IP addresses, ranges,
+  and ports with `network: [allow: rules]` or `http: [allow: rules]`.
+  The CLI accepts `--network-allow` and `--http-allow`. See
+  [network allowlists](guides/sandbox.md#network-allowlists).
+* Handle guest calls with named functions (`:handlers`) or a stateful
+  `Kettlecorn.HostHandler` (`:handler`). The default limit is four pending
+  calls per VM. When the guest cancels a call, Kettlecorn stops that call's
+  function task or notifies the stateful handler if the reply was deferred.
+  Owners who reply manually receive `{:kettlecorn, vm, {:host_call_cancel, reply_to}}`.
+  See
+  [host calls](guides/guest-api.md#host-calls).
+* Set `max_reductions` in `Kettlecorn.eval/3` to limit work per evaluation.
+  Replies report charged reductions even without a limit. If the evaluation
+  exceeds its limit, the error map has `"kind" => "reductions"` and the VM
+  can continue running.
+* Load modules at boot with `preload: true`. The owner receives
+  `{:kettlecorn, vm, {:late_load, module}}` for subsequent on-demand loads.
+  Use `preload: :strict` to stop the VM on such a load. The CLI accepts
+  `--preload on` or `--preload strict` and reports late loads on stderr.
+* Read live linear memory, fuel use when metered, and launcher RSS on Linux
+  with `Kettlecorn.stats/1`. Owners receive final stats in
+  `{:kettlecorn, vm, {:stopped, stats}}`. If the launcher exits without
+  reporting stats, the event carries `nil`.
+* Convert decoded guest values for JSON encoding with
+  `Kettlecorn.ETF.to_json/1`. It rejects unsupported values and map keys
+  that convert to the same string.
+
+### Runtime and tooling
+
+* Install offline with `mix kettlecorn.install --archive PATH` or the
+  `:archive` option to `Kettlecorn.Install.runtime/1`. Runtime downloads
+  now honor [environment proxy settings](guides/running-applications.md#runtime-downloads).
 * Launcher processes share cached compiled code, reducing memory per VM.
-  The first start after upgrading recompiles the runtime.
-* `mix kettlecorn.install --archive PATH` (`Kettlecorn.Install.runtime/1`'s
-  `:archive`) installs a release archive already on disk, verified against
-  the same checksum as a download, for hosts without network access.
-* `network: [allow: rules]` and `http: [allow: rules]` limit the grants to
-  the listed host names, addresses, address ranges and ports; `:public`
-  allows public addresses. For HTTP, hostname requests allowed by resolved
-  address require a direct connection. `kettlecorn-run` takes
-  `--network-allow` and `--http-allow`.
-* Runtime downloads use Mint and support `http://` proxies configured
-  through `https_proxy` or `HTTPS_PROXY` for HTTPS downloads, and
-  `http_proxy` or `HTTP_PROXY` for HTTP mirrors. Loopback hosts and entries
-  in `no_proxy` or `NO_PROXY` are reached directly.
-* The HTTP grant sends guest requests through the proxy in the
-  launcher's environment.
-* Remove VM private directories faster on shutdown and log cleanup failures.
+  Each component in the old cache is compiled again on first use.
+* VM shutdown removes private directories faster and logs cleanup failures.
 
 ## 0.2.0
 
