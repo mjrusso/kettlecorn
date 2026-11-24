@@ -3,7 +3,9 @@ use kettlecorn::{EvalOptions, Runtime, Value, Vm, VmOptions};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 const ROUNDS: usize = 3;
 const WARMUP_PAIRS: usize = 100;
@@ -23,6 +25,12 @@ end
 {:ok, _} = GenServer.start(DispatchBench, :ok, name: DispatchBench)
 "#;
 const EVAL: &str = "GenServer.call(DispatchBench, {:add, 41})";
+const VMS: usize = 8;
+const IDLE_SECONDS: usize = 30;
+const WAIT: &str = r#"
+spawn(fn -> Kettlecorn.Host.call("wait", %{}, timeout: :infinity) end)
+:ok
+"#;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -33,23 +41,30 @@ async fn main() -> Result<()> {
         Some("startup") => startup(&Runtime::load(path)?, false).await,
         Some("warm-up") => startup(&Runtime::load(path)?, true).await,
         Some("dispatch") => dispatch(&Runtime::load(path)?).await,
+        Some("usage") => usage(&Runtime::load(path)?).await,
         Some(mode) => bail!("unknown embedding benchmark mode: {mode}"),
     }
 }
 
 fn samples() -> Result<usize> {
-    match std::env::var("BENCH_SAMPLES") {
+    positive("BENCH_SAMPLES", 2000)
+}
+
+fn positive(name: &str, default: usize) -> Result<usize> {
+    match std::env::var(name) {
         Ok(value) => Ok(value
             .parse::<NonZeroUsize>()
-            .context("BENCH_SAMPLES must be a positive integer")?
+            .with_context(|| format!("{name} must be a positive integer"))?
             .get()),
-        Err(std::env::VarError::NotPresent) => Ok(2000),
-        Err(error) => Err(error).context("read BENCH_SAMPLES"),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(error).with_context(|| format!("read {name}")),
     }
 }
 
 fn run_suite() -> Result<()> {
     samples()?;
+    positive("BENCH_VMS", VMS)?;
+    positive("BENCH_IDLE_SECONDS", IDLE_SECONDS)?;
     let executable = std::env::current_exe()?;
     let caches = tempfile::tempdir().context("create temporary compilation caches")?;
     for round in 1..=ROUNDS {
@@ -67,12 +82,11 @@ fn run_suite() -> Result<()> {
         }
     }
 
+    let cache = caches.path().join(format!("{ROUNDS}-startup"));
     println!("Dispatch on one running VM");
-    run_child(
-        &executable,
-        "dispatch",
-        &caches.path().join(format!("{ROUNDS}-startup")),
-    )
+    run_child(&executable, "dispatch", &cache)?;
+    println!("Fuel and memory");
+    run_child(&executable, "usage", &cache)
 }
 
 fn run_child(executable: &Path, scenario: &str, cache: &Path) -> Result<()> {
@@ -202,4 +216,99 @@ fn summarize(label: &str, samples: &mut [Duration]) {
         median,
         micros(samples[count - 1 - count / 20]),
     );
+}
+
+async fn usage(runtime: &Runtime) -> Result<()> {
+    let waiting = Arc::new(Notify::new());
+    let metered = || {
+        let mut options = VmOptions::default();
+        options.max_fuel = Some(u64::MAX);
+        options.host_call_timeout = Duration::from_secs(86_400);
+        let waiting = waiting.clone();
+        options.register("wait", move |_| {
+            waiting.notify_one();
+            std::future::pending()
+        });
+        options
+    };
+    runtime.warm_up(&metered()).await?;
+
+    let count = positive("BENCH_VMS", VMS)?;
+    let before = Memory::read();
+    let mut vms = Vec::with_capacity(count);
+    vms.push(runtime.start(metered()).await?);
+    // Sample the first VM before starting the others, while it has run only its boot.
+    let stats = vms[0].stats();
+    for _ in 1..count {
+        vms.push(runtime.start(metered()).await?);
+    }
+    println!(
+        "  boot fuel           {:>8.1} M",
+        stats.fuel_consumed.unwrap_or_default() as f64 / 1e6
+    );
+    println!(
+        "  linear memory       {:>8.1} MiB",
+        mib(stats.memory as u64)
+    );
+    match (before, Memory::read()) {
+        (Some(before), Some(after)) => {
+            let per_vm =
+                |bytes: u64, earlier: u64| mib(bytes.saturating_sub(earlier)) / count as f64;
+            println!(
+                "  per idle VM ({count} VMs) rss {:.1} MiB   private {:.1} MiB   pss {:.1} MiB",
+                per_vm(after.rss, before.rss),
+                per_vm(after.private, before.private),
+                per_vm(after.pss, before.pss),
+            );
+        }
+        _ => println!("  per idle VM: /proc/self/smaps_rollup is unavailable"),
+    }
+    for vm in vms.drain(1..) {
+        vm.shutdown().await.result?;
+    }
+
+    let vm = vms.pop().context("no VM")?;
+    vm.eval(WAIT, EvalOptions::default()).await?.result?;
+    tokio::time::timeout(Duration::from_secs(30), waiting.notified())
+        .await
+        .context("the guest did not call the wait callback within 30 s")?;
+    let seconds = positive("BENCH_IDLE_SECONDS", IDLE_SECONDS)?;
+    let start = vm.stats().fuel_consumed.unwrap_or_default();
+    tokio::time::sleep(Duration::from_secs(seconds as u64)).await;
+    let used = vm.stats().fuel_consumed.unwrap_or_default() - start;
+    println!(
+        "  blocked on a host call for {seconds} s: {used} fuel ({:.1} M per hour)",
+        used as f64 * 3600.0 / seconds as f64 / 1e6
+    );
+    vm.shutdown().await.result?;
+    Ok(())
+}
+
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// Process memory from Linux's `/proc/self/smaps_rollup`, in bytes.
+struct Memory {
+    rss: u64,
+    private: u64,
+    pss: u64,
+}
+
+impl Memory {
+    fn read() -> Option<Self> {
+        let text = std::fs::read_to_string("/proc/self/smaps_rollup").ok()?;
+        let field = |name: &str| -> u64 {
+            text.lines()
+                .filter_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+                .filter_map(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
+                .sum::<u64>()
+                * 1024
+        };
+        Some(Self {
+            rss: field("Rss"),
+            private: field("Private_Clean") + field("Private_Dirty"),
+            pss: field("Pss"),
+        })
+    }
 }

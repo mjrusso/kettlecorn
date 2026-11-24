@@ -62,3 +62,10 @@ count per operation per round and defaults to 2,000.
 The suite also reports mean guest-to-host round-trip time per call. It times
 one `Vm::eval` that makes 10,000 calls to a Rust callback and divides the
 elapsed time by 10,000.
+
+The usage scenario starts `BENCH_VMS` metered VMs in one process and reports
+fuel used at boot, guest linear memory, and the increase in host process
+memory per embedded VM. The process figures include host allocations and
+compiled code.
+It then blocks a VM on a host call with `timeout: :infinity` for
+`BENCH_IDLE_SECONDS` (default 30) and reports the fuel consumed meanwhile.
