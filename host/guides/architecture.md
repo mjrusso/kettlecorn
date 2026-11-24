@@ -67,8 +67,11 @@ Stopping has three steps, in order:
 2. The host sends the owner `{:stopped, stats}`, with the record's stats, or
    `nil` when there is no record, as after an unconfirmed shutdown. The owner
    may process the event after cleanup.
-3. After confirmed shutdown, the host removes the private directory. If
-   shutdown is unconfirmed, it keeps the directory and logs its path.
+3. After a confirmed shutdown, the host removes the VM's private directory
+   with one `rm -rf`, and logs the path and `rm`'s error if removal fails.
+   `File.rm_rf/1` is used only when `rm` can't be started: removing the
+   root's files one at a time from the BEAM takes seconds on a busy machine.
+   An unconfirmed shutdown keeps the directory and logs its path.
 
 `Kettlecorn.stop/1` returns, and the VM process exits, after step 3.
 

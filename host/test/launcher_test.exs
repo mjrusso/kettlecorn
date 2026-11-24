@@ -32,6 +32,8 @@ defmodule Kettlecorn.LauncherTest do
       end
 
       assert_receive {:DOWN, ^monitor, :process, ^vm, {:shutdown, {:vm_down, actual}}}, 5_000
+      # The VM stops after removing its private directory.
+      refute File.exists?(instance.dir)
 
       case reason do
         {:exit_status, status} -> assert actual == {:exit_status, status, diagnostics}
@@ -95,6 +97,8 @@ defmodule Kettlecorn.LauncherTest do
     assert_receive {:DOWN, ^monitor, :process, ^vm,
                     {:shutdown, {:vm_down, {:exit_status, 137, ^diagnostics}}}},
                    5_000
+
+    refute File.exists?(state.instance.dir)
   end
 
   test "drains output before reporting the launcher exit" do

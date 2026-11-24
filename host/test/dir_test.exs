@@ -161,6 +161,30 @@ defmodule Kettlecorn.DirTest do
     assert [_winner] = File.ls!(dir <> ".versions")
   end
 
+  test "remove_tree removes a tree, and logs what it can't remove", %{tmp_dir: tmp} do
+    tree = Path.join(tmp, "tree")
+    File.mkdir_p!(Path.join(tree, "a/b"))
+    File.write!(Path.join(tree, "a/b/file"), "x")
+    File.chmod!(Path.join(tree, "a/b/file"), 0o444)
+    assert Dir.remove_tree(tree) == :ok
+    refute File.exists?(tree)
+
+    locked = Path.join(tmp, "locked")
+    kept = Path.join(locked, "kept")
+    File.mkdir_p!(kept)
+    File.chmod!(locked, 0o500)
+    on_exit(fn -> File.chmod(locked, 0o700) end)
+    # A privileged runner can delete in a read-only directory.
+    denied = File.mkdir(Path.join(locked, "probe")) == {:error, :eacces}
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert Dir.remove_tree(kept) == :ok end)
+
+    if denied do
+      assert log =~ ~r/cannot clean up #{Regex.escape(kept)}: rm exited with \d+: .+/
+      assert File.dir?(kept)
+    end
+  end
+
   test "a staging collision is returned as a build error", %{tmp_dir: tmp} do
     dir = Path.join(tmp, "runtime")
     assert {:error, :eexist} = Dir.create(dir, fn _staging -> {:error, :eexist} end)

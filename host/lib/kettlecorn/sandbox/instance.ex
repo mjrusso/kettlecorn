@@ -49,10 +49,7 @@ defmodule Kettlecorn.Sandbox.Instance do
 
   @doc "Deletes the VM's private directory."
   @spec cleanup(t()) :: :ok
-  def cleanup(%__MODULE__{dir: dir}) do
-    File.rm_rf(dir)
-    :ok
-  end
+  def cleanup(%__MODULE__{dir: dir}), do: Kettlecorn.Dir.remove_tree(dir)
 
   defp root(dir), do: Path.join(dir, "root")
 

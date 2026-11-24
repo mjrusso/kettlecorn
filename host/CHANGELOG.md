@@ -11,6 +11,7 @@
 * Owners receive `{:kettlecorn, vm, {:stopped, stats}}` when a VM stops.
   The event contains final fuel and memory, or `nil` if the launcher
   exited without reporting them.
+* Remove VM private directories faster on shutdown and log cleanup failures.
 
 ## 0.2.0
 

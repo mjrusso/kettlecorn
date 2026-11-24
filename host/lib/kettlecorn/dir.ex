@@ -129,6 +129,21 @@ defmodule Kettlecorn.Dir do
   defp filesystem_error(action, path, reason),
     do: {:error, "cannot #{action} #{path}: #{:file.format_error(reason)}"}
 
+  # Use one rm process to avoid a dirty I/O scheduler round trip per file.
+  def remove_tree(path) do
+    case System.cmd("rm", ["-rf", "--", path], stderr_to_stdout: true) do
+      {_, 0} ->
+        :ok
+
+      {output, status} ->
+        Logger.warning(
+          "cannot clean up #{path}: rm exited with #{status}: #{String.trim(output)}"
+        )
+    end
+  rescue
+    ErlangError -> cleanup(path)
+  end
+
   defp cleanup(path) do
     case File.rm_rf(path) do
       {:ok, _} ->

@@ -13,7 +13,8 @@ all = ["Kettlecorn", "Kettlecorn.*", "Mix.Tasks.Kettlecorn.*"]
       {all, [":erlang.binary_to_term"]},
       # Only Kettlecorn.VM opens the launcher port.
       {all, ["Port.open", ":erlang.open_port"], except: ["Kettlecorn.VM"]},
-      # Dir copies assets; Runtime populates roots; the Mix run task owns CLI stdio and lifetime.
+      # Dir copies assets and removes instance directories; Runtime populates
+      # roots; the Mix run task owns CLI stdio and lifetime.
       {all, ["System.cmd", "System.shell", ":os.cmd"],
        except: ["Kettlecorn.Dir", "Kettlecorn.Runtime", "Mix.Tasks.Kettlecorn.Run"]},
       # Strings from the guest never become atoms. Only Kettlecorn.Cook,
