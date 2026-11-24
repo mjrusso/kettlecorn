@@ -1,14 +1,15 @@
 defmodule Kettlecorn.Evaluator.Capture do
   @moduledoc false
   # Track descendants separately from I/O so output floods cannot delay cleanup.
-  # Run guest callbacks in tracked workers. Guest code can replace its tracer
-  # or kill the tracker; VM limits provide the isolation boundary.
+  # Run guest callbacks in tracked workers charged to the evaluation's
+  # reduction budget. Guest code can replace its tracer or kill the
+  # tracker; VM limits provide the isolation boundary.
 
   @max_output 1_000_000
 
   def max_output, do: @max_output
 
-  def start(stdout) do
+  def start(stdout, budget) do
     {tracker, tracker_ref} =
       spawn_monitor(fn ->
         # High priority lets the tracker keep up with continuous process spawning.
@@ -27,6 +28,7 @@ defmodule Kettlecorn.Evaluator.Capture do
           truncated: false,
           stdout: stdout,
           tracker: tracker,
+          budget: budget,
           # monitor ref => {pid, from, reply_as}
           workers: %{}
         })
@@ -224,9 +226,11 @@ defmodule Kettlecorn.Evaluator.Capture do
   # so the leader must accept only binaries and never traverse returned data.
   defp start_worker(s, from, reply_as, pieces) do
     leader = self()
+    budget = s.budget
 
     {pid, ref} =
       spawn_monitor(fn ->
+        :ok = :wasm.attach_reduction_budget(budget)
         monitor = Process.monitor(leader)
 
         receive do

@@ -13,13 +13,20 @@ defmodule Kettlecorn.Evaluator do
   Guest code can interfere with tracing; VM limits remain necessary for
   untrusted code.
 
-  Replies contain the formatted result, captured output and, for bounded
-  plain data, the result as a term.
+  An evaluation, the processes it spawns and the workers that run its output
+  callbacks are charged to one reduction budget (OTP patch 0108). Past
+  `"max_reductions"`, the scheduler kills them, and the evaluation fails
+  with kind `reductions`.
+
+  Replies contain the formatted result, captured output, the reductions
+  used and, for bounded plain data, the result as a term.
   """
   use GenServer
 
   alias Kettlecorn.Evaluator.Capture
 
+  # The budget counts in a signed 64-bit integer.
+  @max_reductions 0x7FFF_FFFF_FFFF_FFFF
   @max_value_terms 1_000_000
   @max_value_depth 508
 
@@ -38,8 +45,14 @@ defmodule Kettlecorn.Evaluator do
         state
       )
       when is_binary(code) and is_map_key(@languages, language) do
-    spawn(fn -> evaluate(code, opts, from) end)
-    {:noreply, state}
+    case Map.get(opts, "max_reductions", :infinity) do
+      limit when limit == :infinity or (is_integer(limit) and limit in 1..@max_reductions) ->
+        spawn(fn -> evaluate(code, opts, limit, from) end)
+        {:noreply, state}
+
+      _ ->
+        {:reply, {:error, %{"kind" => "badarg"}}, state}
+    end
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, %{"kind" => "badarg"}}, state}
@@ -48,17 +61,22 @@ defmodule Kettlecorn.Evaluator do
          code,
          %{"timeout_ms" => timeout, "finish_timeout_ms" => finish_timeout, "language" => language} =
            opts,
+         max_reductions,
          from
        ) do
     language = Map.fetch!(@languages, language)
     binding = opts |> Map.get("binding", %{}) |> Enum.map(fn {k, v} -> {String.to_atom(k), v} end)
     parent = self()
-    capture = Capture.start(Process.group_leader())
+    budget = :wasm.reduction_budget(max_reductions)
+    capture = Capture.start(Process.group_leader(), budget)
     {terms, depth, bytes} = value_limits(opts)
+    deadline = deadline(timeout)
 
-    # Formatting and checking the result must also run under the timeout.
+    # Formatting and checking the result must also run under the timeout
+    # and the reduction budget.
     {pid, ref} =
       spawn_monitor(fn ->
+        :ok = :wasm.attach_reduction_budget(budget)
         receive do: (:go -> :ok)
 
         reply =
@@ -78,9 +96,14 @@ defmodule Kettlecorn.Evaluator do
 
     {reply, mode} =
       receive do
+        # Wait for DOWN before closing the budget. The scheduler can still
+        # charge the evaluation after it sends its reply.
         {:reply, ^pid, reply} ->
-          Process.demonitor(ref, [:flush])
-          {reply, :forward}
+          receive do
+            {:DOWN, ^ref, :process, ^pid, _reason} -> {reply, :forward}
+          after
+            remaining(deadline) -> kill(pid, ref)
+          end
 
         # A forged exit reason can run guest exception or Inspect callbacks.
         # Format it without those callbacks so timeout handling cannot block.
@@ -88,18 +111,44 @@ defmodule Kettlecorn.Evaluator do
           reply = failure(:exit, "the evaluation exited: " <> inspect(reason, structs: false))
           {reply, :forward}
       after
-        timeout ->
-          # Kill the evaluation directly: guest code can kill its tracker.
-          Process.exit(pid, :kill)
-          Process.demonitor(ref, [:flush])
+        remaining(deadline) -> kill(pid, ref)
+      end
 
-          {failure(:timeout, "evaluation timed out"), :kill}
+    {{reply, mode}, reductions} =
+      case :wasm.close_reduction_budget(budget) do
+        {used, true} ->
+          {{failure(:reductions, "evaluation exceeded its reduction limit"), :kill}, used}
+
+        {used, false} ->
+          {{reply, mode}, used}
       end
 
     {output, capture} = Capture.finish(capture, mode, finish_timeout)
-    GenServer.reply(from, reply |> with_output(output) |> limit_value_bytes(bytes))
+
+    reply =
+      reply
+      |> with_output(output)
+      |> put_field("reductions", reductions)
+      |> limit_value_bytes(bytes)
+
+    GenServer.reply(from, reply)
     Capture.await(capture)
   end
+
+  # Kill the evaluation directly: guest code can kill its tracker.
+  defp kill(pid, ref) do
+    Process.exit(pid, :kill)
+    Process.demonitor(ref, [:flush])
+    {failure(:timeout, "evaluation timed out"), :kill}
+  end
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(0, deadline - System.monotonic_time(:millisecond))
+
+  defp put_field({status, reply}, key, value), do: {status, Map.put(reply, key, value)}
 
   defp with_output({status, reply}, {output, truncated}) do
     reply = Map.put(reply, "output", output)

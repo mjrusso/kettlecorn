@@ -183,9 +183,17 @@ evaluation calls the target `kettlecorn_evaluator` with:
   "timeout_ms" => evaluation_ms,
   "finish_timeout_ms" => finish_ms,
   "binding" => binding,
-  "language" => "elixir" # or "erlang"
+  "language" => "elixir", # or "erlang"
+  "max_reductions" => limit # 1..2^63-1, or :infinity (the default)
 }}
 ```
+
+An evaluation reply includes `"reductions"`, the reductions charged to
+the evaluation, its descendants, and output callbacks before the budget
+closes. On timeout, the evaluator closes the budget after requesting
+termination. When a charge exceeds the limit, the count includes that
+charge and the evaluation fails with `"kind" => "reductions"`. Requests
+rejected before evaluation receive a `badarg` reply without the count.
 
 The Elixir and Rust clients both use a reply margin of 1,000 ms. For a
 finite timeout `t` and reply margin `m`, the budgets in milliseconds are:
