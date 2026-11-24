@@ -49,8 +49,12 @@ defmodule Kettlecorn.RuntimeTest do
     assert message =~ "doesn't name one emulator"
 
     TestRuntime.fixture(runtime, %{"kettlecorn" => "0.0.0"})
-    assert {:error, message} = Runtime.load_release(runtime)
+    assert {:error, message} = Runtime.lookup_cache(runtime)
     assert message =~ "expected Kettlecorn runtime version"
+
+    File.rm!(Path.join(runtime, "manifest.json"))
+    assert {:error, message} = Runtime.lookup_cache(runtime)
+    assert message =~ "no manifest.json"
   end
 
   test "install verifies the digest and the staged release before publishing", %{tmp_dir: dir} do

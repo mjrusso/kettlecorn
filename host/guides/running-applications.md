@@ -150,11 +150,18 @@ cooking task:
 Use the runtime's OTP major release and exact Elixir version to compile
 it. The [pinned versions](development.md#pinned-versions) list the repository's
 compiler versions; an installed runtime records its own in `manifest.json`.
-From your Mix project, fetch dependencies, install into an explicit runtime
-directory, and cook:
+From your Mix project, fetch dependencies, install the runtime in the user
+cache, and cook.
 
 ```sh
 mix deps.get
+mix kettlecorn.install
+MIX_ENV=prod mix kettlecorn.cook
+```
+
+Pass `--runtime` when you install into a project directory.
+
+```sh
 mix kettlecorn.install --dir .kettlecorn-runtime
 MIX_ENV=prod mix kettlecorn.cook --runtime .kettlecorn-runtime
 ```
@@ -170,14 +177,18 @@ _kettlecorn
 _kettlecorn.versions/
 ```
 
-The cook writes `_kettlecorn` by default. Passing `--runtime` checks that
-dependencies absent from the bundle are present in that runtime. The `runtime: false`
-dependency keeps the host library out of the guest bundle.
+The cook writes `_kettlecorn` by default. It selects a runtime from
+`--runtime`, `KETTLECORN_RUNTIME`, the `:runtime` application setting, or
+the installed cache, in that order. It checks that the compiler matches
+and that the runtime supplies required dependencies missing from the
+bundle. An invalid selected runtime fails the cook. If there is no
+configured or cached runtime, the task prints a message and continues.
+The `runtime: false` dependency keeps the host library out of the guest bundle.
 
 ### Bundle compatibility
 
 Cooking writes `kettlecorn.json` with the compiler's OTP major, exact Elixir
-version, and protocol version. Supplying `--runtime` validates the runtime
+version, and protocol version. The task validates the selected runtime
 and compiler before replacing the bundle symlink. The host checks bundles
 before copying them.
 Guest boot validates the copied metadata for both host VMs and the CLI before

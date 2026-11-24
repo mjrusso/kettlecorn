@@ -49,7 +49,8 @@ defmodule Kettlecorn.Cook do
       dependencies, which the entrypoint doesn't depend on (plugins, say,
       started with `Kettlecorn.start_link(apps: ...)`).
     * `:runtime` - check that required dependencies are either cooked or
-      available in this runtime directory.
+      available in this runtime: a directory, or a `Kettlecorn.Runtime`
+      that is already loaded.
 
   The bundle includes the entrypoint, extra roots, and their dependencies
   from `:build`, as listed in their `.app` files (`applications` and

@@ -64,20 +64,24 @@ defmodule Kettlecorn.Runtime do
   """
   @spec find(keyword()) :: {:ok, t()} | {:error, String.t()}
   def find(opts) do
+    case locate(opts) do
+      :missing ->
+        {:error,
+         "No Kettlecorn runtime found: run `mix kettlecorn.install`, " <>
+           "or set :runtime / KETTLECORN_RUNTIME"}
+
+      result ->
+        result
+    end
+  end
+
+  @doc false
+  # Like find/1, but :missing when no runtime is configured or installed.
+  @spec locate(keyword()) :: :missing | {:ok, t()} | {:error, String.t()}
+  def locate(opts) do
     case select(opts) do
-      {:configured, path} ->
-        load(path)
-
-      {:installed, path} ->
-        case lookup_cache(path) do
-          :missing ->
-            {:error,
-             "No Kettlecorn runtime found: run `mix kettlecorn.install`, " <>
-               "or set :runtime / KETTLECORN_RUNTIME"}
-
-          result ->
-            result
-        end
+      {:configured, path} -> load(path)
+      {:installed, path} -> lookup_cache(path)
     end
   end
 

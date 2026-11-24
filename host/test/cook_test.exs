@@ -135,4 +135,46 @@ defmodule Kettlecorn.CookTest do
     assert message =~ "compiler must match"
     refute File.exists?(out)
   end
+
+  test "the task checks the installed runtime by default, and says when there is none",
+       %{tmp_dir: tmp} do
+    mix = fn home, args ->
+      System.cmd("mix", args,
+        cd: Path.expand("..", __DIR__),
+        stderr_to_stdout: true,
+        env: [
+          {"MIX_ENV", "test"},
+          {"HOME", home},
+          {"XDG_CACHE_HOME", nil},
+          {"KETTLECORN_RUNTIME", nil},
+          {"ERL_FLAGS", "+S 2:2"}
+        ]
+      )
+    end
+
+    path_file = Path.join(tmp, "installed-dir")
+    probe = "File.write!(#{inspect(path_file)}, Kettlecorn.Runtime.installed_dir())"
+    {_, 0} = mix.(tmp, ["run", "--no-compile", "--no-start", "-e", probe])
+
+    relative_cache = Path.relative_to(File.read!(path_file), tmp)
+    assert Path.type(relative_cache) == :relative
+
+    out = Path.join(tmp, "out")
+    version = Kettlecorn.Runtime.version()
+
+    home = Path.join(tmp, "compiler")
+
+    TestRuntime.fixture(Path.join(home, relative_cache), %{
+      "kettlecorn" => version,
+      "elixir" => "0.0.0"
+    })
+
+    {output, status} = mix.(home, ["kettlecorn.cook", "--out", out])
+    assert status != 0, output
+    assert output =~ "compiler must match"
+    refute File.exists?(out)
+
+    {output, 0} = mix.(Path.join(tmp, "empty"), ["kettlecorn.cook", "--out", out])
+    assert output =~ "No runtime found; skipping the compatibility check"
+  end
 end

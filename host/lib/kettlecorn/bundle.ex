@@ -21,12 +21,14 @@ defmodule Kettlecorn.Bundle do
 
   def runtime(nil), do: {:ok, nil}
 
+  def runtime(%Runtime{} = runtime) do
+    if compatible?(compiler(), runtime.manifest),
+      do: {:ok, runtime},
+      else: {:error, "the compiler must match the runtime's OTP major and exact Elixir version"}
+  end
+
   def runtime(dir) do
-    with {:ok, runtime} <- Runtime.load(dir) do
-      if compatible?(compiler(), runtime.manifest),
-        do: {:ok, runtime},
-        else: {:error, "the compiler must match the runtime's OTP major and exact Elixir version"}
-    end
+    with {:ok, runtime} <- Runtime.load(dir), do: runtime(runtime)
   end
 
   def load(dir, manifest) do

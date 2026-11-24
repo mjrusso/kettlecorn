@@ -12,6 +12,10 @@
   callback during preload, or while the guest's host-call process restarts.
   A call returns `{:error, :interrupted}` if that process stops while the
   call waits.
+* `mix kettlecorn.cook` validates the runtime selected by `--runtime`,
+  `KETTLECORN_RUNTIME`, the `:runtime` application setting, or the
+  installed cache, in that order. With no runtime, it prints a message
+  and continues.
 * `Kettlecorn.ETF.to_json/1` converts decoded guest values to JSON-shaped
   data, and returns an error for pids, references, ports, invalid UTF-8,
   improper lists and keys that collide.

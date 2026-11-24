@@ -25,8 +25,10 @@ defmodule Mix.Tasks.Kettlecorn.Cook do
     * `--app` - entrypoint application (default: the current project's).
     * `--root` - another application to cook with its dependencies (see
       `:roots` in `Kettlecorn.Cook.cook/1`); can be given more than once.
-    * `--runtime` - runtime to check the dependencies against (default
-      `$KETTLECORN_RUNTIME`, if set).
+    * `--runtime` - runtime to check the compiler and dependencies against
+      (default `$KETTLECORN_RUNTIME`, then the `:runtime` application
+      setting, then the runtime `mix kettlecorn.install` installed, if any).
+      If no runtime is available, the task skips the check and prints a message.
 
   Compile the project with the runtime's OTP major release and exact Elixir
   version, recorded in `manifest.json`. Then run it:
@@ -48,6 +50,19 @@ defmodule Mix.Tasks.Kettlecorn.Cook do
 
     config = Mix.Project.config()
 
+    runtime =
+      case Kettlecorn.Runtime.locate(runtime: opts[:runtime]) do
+        {:ok, runtime} ->
+          runtime
+
+        :missing ->
+          Mix.shell().info("No runtime found; skipping the compatibility check")
+          nil
+
+        {:error, message} ->
+          Mix.raise(message)
+      end
+
     result =
       Kettlecorn.Cook.cook(
         app: opts[:app] || config[:app],
@@ -56,7 +71,7 @@ defmodule Mix.Tasks.Kettlecorn.Cook do
         out: opts[:out] || "_kettlecorn",
         config: config[:config_path],
         env: Mix.env(),
-        runtime: opts[:runtime] || Kettlecorn.Runtime.env("KETTLECORN_RUNTIME")
+        runtime: runtime
       )
 
     case result do
