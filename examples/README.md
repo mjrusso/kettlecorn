@@ -142,10 +142,10 @@ iex(2)> x=42
 ## Cooked apps
 
 From the repository root, enter `nix develop` and run `just example counter`,
-`just example csv_stats -e 'CsvStats.report()'`, or `just example lua`.
-The `example` recipe cooks the app with Mix, then runs it in IEx unless
-other launcher arguments are supplied. `just build-examples` discovers and
-cooks every project under `examples/apps/` without starting VMs.
+`just example csv_stats -e 'CsvStats.report()'`, `just example lua`, or
+`just example dune`. The `example` recipe cooks the app with Mix, then runs
+it in IEx unless other launcher arguments are supplied. `just build-examples`
+discovers and cooks every project under `examples/apps/` without starting VMs.
 
 Cooked apps are written to `_kettlecorn/examples/<name>/`. Each example uses
 its own `mix.lock` and the host library's `mix kettlecorn.cook` task.
@@ -256,6 +256,66 @@ The app bundles its own Lua dependency.
 The [comparison notebook](../host/notebooks/lua.livemd) loads Lua directly
 from Livebook, runs the same transformation on the host and in the guest,
 and exposes a controlled host operation without cooking an app.
+
+### [`apps/dune`](apps/dune)
+
+`DuneExample` evaluates Elixir code with [Dune 0.3.18](https://hexdocs.pm/dune/),
+which checks the code's calls against an allowlist before running it. Dune's
+default allowlist rejects `spawn`, `send`, `receive`, ETS, atom creation, and
+system information. [`DuneExample.Allowlist`](apps/dune/lib/dune_example/allowlist.ex)
+also rejects functions that read the clock, use `:rand`'s process state, or
+return the caller's PID or a new reference. It allows `Kettlecorn.Host.call/3`,
+`:rand.seed_s/2` and `:rand.uniform_s/2`, so code can draw random numbers
+from a seed the host supplies (see
+[controlled inputs](../host/guides/sandbox.md#controlled-inputs)). A session
+keeps bindings and modules between evaluations:
+
+```console
+$ just example dune
+iex(1)> DuneExample.eval("x = 1 + 2; x * 2")
+{:ok, "6", ""}
+iex(2)> DuneExample.eval("x + 1")
+{:ok, "4", ""}
+iex(3)> DuneExample.eval("DateTime.utc_now()")
+{:error, :restricted,
+ "** (DuneRestrictedError) function DateTime.utc_now/0 is restricted"}
+```
+
+From a host program, configure a handler for the `"double"` host call. Give
+host-call arguments string keys: Dune replaces atoms that evaluated code
+creates, so an atom key can reach the host under Dune's replacement name.
+
+```elixir
+{:ok, vm} =
+  Kettlecorn.start_link(
+    app: "_kettlecorn/examples/dune",
+    preload: :strict,
+    handlers: %{
+      "double" => fn
+        %{"n" => n} when is_number(n) -> {:ok, 2 * n}
+        _args -> {:error, "expected a number"}
+      end
+    },
+    max_fuel: 100_000_000_000,
+    max_lifetime: 30_000
+  )
+
+code = ~S|Kettlecorn.Host.call("double", %{"n" => 21})|
+{:ok, {:ok, "{:ok, 42}", ""}} = Kettlecorn.call(vm, :dune_example, {:eval, code})
+Kettlecorn.stop(vm)
+```
+
+The example restricts process creation, messaging, and the clock and
+random functions listed above. `preload: :strict` loads modules from the
+boot-time code path and stops the VM on a later on-demand load. Kettlecorn
+provides the isolation boundary.
+
+Dune sets a wall-clock timeout and polls the evaluation's reduction count
+in a separate process. The checker competes for the guest's scheduler
+while code runs and keeps consuming CPU and fuel while a host call waits.
+The stopping point can vary with scheduling and reply timing. This
+example runs Dune in a GenServer. Use VM-wide limits such as `max_fuel`
+and `max_lifetime` to bound that work.
 
 ## Rust projects
 

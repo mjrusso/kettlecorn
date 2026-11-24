@@ -212,8 +212,8 @@ Registered GenServers are reachable through `Kettlecorn.call/4`.
 
 The repository's [cooked examples](https://github.com/mjrusso/kettlecorn/blob/main/examples/README.md#cooked-apps)
 run with `just example counter`, `just example csv_stats -e 'CsvStats.report()'`,
-and `just example lua` inside `nix develop`. These recipes build with Mix
-and write cooked apps under `_kettlecorn/examples/`.
+`just example lua`, and `just example dune` inside `nix develop`. These
+recipes build with Mix and write cooked apps under `_kettlecorn/examples/`.
 
 The [Lua notebook](../notebooks/lua.livemd) shows how to load a compiled
 dependency directly with `code_paths`.

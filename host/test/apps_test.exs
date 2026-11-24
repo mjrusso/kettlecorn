@@ -57,6 +57,52 @@ defmodule Kettlecorn.AppsTest do
              Kettlecorn.call(vm, :lua_example, {:transform, event})
   end
 
+  test "Dune evaluates code that can't observe the clock, randomness, or other processes" do
+    vm = start_vm(app: example("dune"), preload: :strict, owner: self())
+    eval = &Kettlecorn.call(vm, :dune_example, {:eval, &1}, 15_000)
+
+    assert {:ok, {:ok, "6", ""}} = eval.("x = 1 + 2; x * 2")
+    assert {:ok, {:ok, "7", ""}} = eval.("defmodule M do def f(x), do: x + 4 end; M.f(x)")
+
+    for code <- [
+          "receive do _ -> :ok end",
+          "spawn(fn -> :ok end)",
+          "self()",
+          "DateTime.utc_now()",
+          ":erlang.monotonic_time()",
+          "Enum.random([1, 2])",
+          ":rand.uniform()",
+          ":rand.seed_s(:exsss)",
+          ":rand.uniform_s(:rand.seed_s(:exsss, 1))",
+          "Process.sleep(1)"
+        ] do
+      assert {:ok, {:error, :restricted, _message}} = eval.(code), code
+    end
+
+    task = Task.async(fn -> eval.(~S|Kettlecorn.Host.call("double", %{"n" => 21})|) end)
+    assert_receive {:kettlecorn, ^vm, {:host_call, reply_to, "double", %{"n" => 21}}}, 15_000
+    :ok = Kettlecorn.reply(vm, reply_to, {:ok, 42})
+    assert {:ok, {:ok, "{:ok, 42}", ""}} = Task.await(task, 15_000)
+
+    # A seed from the host determines every draw.
+    draw = ~S"""
+    {:ok, seed} = Kettlecorn.Host.call("seed")
+    {n, _state} = :rand.uniform_s(1_000_000, :rand.seed_s(:exsss, seed))
+    n
+    """
+
+    [first, second] =
+      for _run <- 1..2 do
+        task = Task.async(fn -> eval.(draw) end)
+        assert_receive {:kettlecorn, ^vm, {:host_call, reply_to, "seed", %{}}}, 15_000
+        :ok = Kettlecorn.reply(vm, reply_to, {:ok, 42})
+        assert {:ok, {:ok, value, ""}} = Task.await(task, 15_000)
+        value
+      end
+
+    assert first == second
+  end
+
   test "rejects a directory that isn't a cooked app" do
     assert_raise ArgumentError, ~r/not a compatible cooked application/, fn ->
       Kettlecorn.Sandbox.new(TestRuntime.opts(app: System.tmp_dir!()))

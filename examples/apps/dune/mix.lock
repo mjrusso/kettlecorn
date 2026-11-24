@@ -1,0 +1,4 @@
+%{
+  "dune": {:hex, :dune, "0.3.18", "bbe817131f09011c643d6c71f25991d5093155080ee40c756788d50e21909cb6", [:mix], [], "hexpm", "510aa32a6925fb24654823bc688c0c4ddf6c3fb7c0b21e91d28106e035e72af2"},
+  "nimble_options": {:hex, :nimble_options, "1.2.0", "73e5c5fecb08e59f390e0f59c2320b585d72470dbdd9230a469e06881b9dd4a8", [:mix], [], "hexpm", "3a784a75ef9e407619c8c9e98239b1acd29216deb737044a8c1063e2671ce6d9"},
+}
