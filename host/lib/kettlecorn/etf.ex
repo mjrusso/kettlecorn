@@ -60,6 +60,40 @@ defmodule Kettlecorn.ETF do
     end
   end
 
+  @type json :: nil | boolean() | number() | String.t() | [json()] | %{String.t() => json()}
+
+  @type json_error ::
+          {:unsupported,
+           :pid | :reference | :port | :bitstring | :invalid_utf8 | :improper_list | :map_key}
+          | {:duplicate_key, String.t()}
+
+  @doc """
+  Converts a term from `decode/2` to JSON-shaped data, which `JSON.encode!/1`
+  accepts: `nil`, booleans, numbers, UTF-8 strings, lists, and maps with
+  string keys.
+
+    * Other atoms, and `{:unknown_atom, name}`, become their names.
+    * Tuples become lists, so `{:ok, 1}` and `[:ok, 1]` convert alike.
+    * Map keys that are atoms or integers become strings. Two keys that
+      become the same string, such as `:a` and `"a"`, are an error.
+    * A `Kettlecorn.Struct` becomes a map of its fields, with
+      `"__struct__"` holding the module's name, as an unknown struct
+      module's map does.
+
+  A guest tuple `{:unknown_atom, "x"}` looks like the decoder's
+  representation of an unknown atom, and becomes `"x"`.
+
+  Returns `{:error, reason}` for a `Kettlecorn.Pid` or `Kettlecorn.Opaque`, a
+  bitstring that isn't a whole number of bytes, a binary that isn't valid
+  UTF-8, an improper list, or a map key of another type.
+
+      iex> {:ok, term} = Kettlecorn.ETF.decode(:erlang.term_to_binary(%{ok: {1, "two"}}))
+      iex> Kettlecorn.ETF.to_json(term)
+      {:ok, %{"ok" => [1, "two"]}}
+  """
+  @spec to_json(term()) :: {:ok, json()} | {:error, json_error()}
+  defdelegate to_json(term), to: Kettlecorn.ETF.JSON, as: :convert
+
   @doc false
   @spec decode_with_size(binary(), keyword()) ::
           {:ok, term(), non_neg_integer()} | {:error, decode_error()}

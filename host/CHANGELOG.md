@@ -12,6 +12,9 @@
   callback during preload, or while the guest's host-call process restarts.
   A call returns `{:error, :interrupted}` if that process stops while the
   call waits.
+* `Kettlecorn.ETF.to_json/1` converts decoded guest values to JSON-shaped
+  data, and returns an error for pids, references, ports, invalid UTF-8,
+  improper lists and keys that collide.
 * `Kettlecorn.stats/1` reports fuel use, linear memory, and launcher RSS
   on Linux.
 * Owners receive `{:kettlecorn, vm, {:stopped, stats}}` when a VM stops.

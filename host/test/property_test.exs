@@ -205,6 +205,20 @@ defmodule Kettlecorn.PropertyTest do
     end
   end
 
+  property "to_json returns data that JSON encodes and decodes unchanged, or an error" do
+    check all(
+            data <- plain_term(),
+            wrap <- member_of([& &1, &[&1, self()], &%{key: &1, other: make_ref()}])
+          ) do
+      {:ok, term} = ETF.decode(:erlang.term_to_binary(wrap.(data)))
+
+      case ETF.to_json(term) do
+        {:ok, json} -> assert JSON.decode!(JSON.encode!(json)) == json
+        {:error, _reason} -> :ok
+      end
+    end
+  end
+
   property "never raises on arbitrary bytes, and creates no atoms" do
     check all(bytes <- binary(), max_runs: 500) do
       before = :erlang.system_info(:atom_count)

@@ -191,6 +191,25 @@ Kettlecorn.stop(pricing)
 `struct!/2` checks keys but does not validate field values. Validate those
 values before constructing host structs or running their protocol implementations.
 
+## Convert guest values for JSON
+
+`Kettlecorn.ETF.to_json/1` converts decoded values to data that
+`JSON.encode!/1` accepts. Convert the apple quote returned by the VM
+earlier in the notebook:
+
+```elixir
+{:ok, ["ok", %{"__struct__" => "Elixir.MyApp.Quote", "sku" => "apple", "price" => 0.5}] = quote_json} =
+  Kettlecorn.ETF.to_json(apple)
+
+JSON.encode!(quote_json)
+```
+
+The conversion rejects map keys that become the same string:
+
+```elixir
+{:error, {:duplicate_key, "quote"}} = Kettlecorn.ETF.to_json(%{:quote => 1, "quote" => 2})
+```
+
 ## Next steps
 
 The [Guest API guide](../guides/guest-api.md) documents messages and host calls.

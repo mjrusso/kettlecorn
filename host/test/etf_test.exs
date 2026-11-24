@@ -166,4 +166,64 @@ defmodule Kettlecorn.ETFTest do
       assert {:error, :too_large} = ETF.decode(:erlang.term_to_binary(term), max_bytes: 4 * n)
     end
   end
+
+  describe "to_json/1" do
+    defp json(term) do
+      {:ok, decoded} = roundtrip(term)
+      ETF.to_json(decoded)
+    end
+
+    test "converts decoded data to what JSON encodes" do
+      term = %{
+        :ok => {1, 2.5, "three"},
+        "list" => [nil, true, false, :atom],
+        7 => %URI{host: "example.com"},
+        "nested" => %{"empty" => []}
+      }
+
+      uri =
+        %URI{host: "example.com"}
+        |> Map.from_struct()
+        |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+        |> Map.put("__struct__", "Elixir.URI")
+
+      assert {:ok, json} = json(term)
+
+      assert json == %{
+               "ok" => [1, 2.5, "three"],
+               "list" => [nil, true, false, "atom"],
+               "7" => uri,
+               "nested" => %{"empty" => []}
+             }
+
+      assert JSON.decode!(JSON.encode!(json)) == json
+    end
+
+    test "names unknown atoms, also as map keys and struct modules" do
+      binary = :erlang.term_to_binary(%{:__struct__ => :ok, :ok => :ok})
+      unknown = String.replace(binary, "ok", "zq")
+      {:ok, decoded} = ETF.decode(unknown)
+      assert ETF.to_json(decoded) == {:ok, %{"__struct__" => "zq", "zq" => "zq"}}
+    end
+
+    test "names a struct's module with a string, whatever atom it is" do
+      assert {:ok, %{"__struct__" => "nil", "a" => 1}} = json(%{__struct__: nil, a: 1})
+      assert {:ok, %{"__struct__" => "true"}} = json(%{__struct__: true})
+    end
+
+    test "returns an error for data without a JSON form" do
+      assert json([self()]) == {:error, {:unsupported, :pid}}
+      assert json(%{ref: make_ref()}) == {:error, {:unsupported, :reference}}
+      assert json(<<1::3>>) == {:error, {:unsupported, :bitstring}}
+      assert json(<<255>>) == {:error, {:unsupported, :invalid_utf8}}
+      assert json(%{<<255>> => 1}) == {:error, {:unsupported, :invalid_utf8}}
+      # Guest data shaped like an unknown atom gets the same check.
+      assert json({:unknown_atom, <<255>>}) == {:error, {:unsupported, :invalid_utf8}}
+      assert json(%{{:unknown_atom, <<255>>} => 1}) == {:error, {:unsupported, :invalid_utf8}}
+      assert json([1 | 2]) == {:error, {:unsupported, :improper_list}}
+      assert json(%{{1} => 1}) == {:error, {:unsupported, :map_key}}
+      assert json(%{1.5 => 1}) == {:error, {:unsupported, :map_key}}
+      assert json(%{:a => 1, "a" => 2}) == {:error, {:duplicate_key, "a"}}
+    end
+  end
 end
