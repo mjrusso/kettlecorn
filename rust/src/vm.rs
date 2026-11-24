@@ -201,10 +201,9 @@ pub struct Shutdown {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Stats {
-    /// Fuel consumed since the VM started, including boot. Updated each time the
-    /// guest calls into the host, so it omits only the computation since the
-    /// guest's latest I/O or wait. `None` without [`VmOptions::max_fuel`]: fuel is
-    /// metered only when it is limited.
+    /// Fuel consumed since the VM started, including boot. Updated when the guest
+    /// calls into the host and on every 10 ms epoch tick while it runs. `None`
+    /// without [`VmOptions::max_fuel`]: fuel is metered only when it is limited.
     pub fuel_consumed: Option<u64>,
     /// Bytes of WebAssembly linear memory allocated. Linear memory does not shrink.
     /// The VM's compiled code and Wasmtime's own allocations are not included.

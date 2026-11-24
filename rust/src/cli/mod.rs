@@ -3,7 +3,7 @@ mod terminal;
 
 use crate::engine::{
     Cancellation, CompilationCache, ExecutionOutcome, GuestOptions, Mode, RootOptions, Runtime,
-    WASMTIME_VERSION, streams::Streams,
+    Usage, WASMTIME_VERSION, streams::Streams,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -53,6 +53,9 @@ struct Args {
     /// Write launcher diagnostics here and termination JSON to this path with a .stopped suffix
     #[arg(long)]
     stderr: Option<PathBuf>,
+    /// Create this file and keep the fuel and memory the guest has used in it
+    #[arg(long)]
+    stats: Option<PathBuf>,
     /// Deliver guest output over bounded records on a private Unix socket
     #[arg(long, requires = "framed")]
     output_socket: Option<PathBuf>,
@@ -121,13 +124,31 @@ fn environment(value: &str) -> Result<(String, String), String> {
 struct Stopped {
     path: Option<PathBuf>,
     outcome: ExecutionOutcome,
+    usage: Arc<Usage>,
+    metered: bool,
 }
+
+/// The termination record in `PROTOCOL.md`.
+#[derive(serde::Serialize)]
+struct Record<'a> {
+    #[serde(flatten)]
+    outcome: &'a ExecutionOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fuel_consumed: Option<u64>,
+    memory: usize,
+}
+
 impl Drop for Stopped {
     fn drop(&mut self) {
         if let Some(path) = &self.path {
+            let record = Record {
+                outcome: &self.outcome,
+                fuel_consumed: self.metered.then(|| self.usage.fuel()),
+                memory: self.usage.memory(),
+            };
             let result = (|| -> Result<()> {
                 let temporary = path.with_extension("tmp");
-                std::fs::write(&temporary, serde_json::to_vec(&self.outcome)?)?;
+                std::fs::write(&temporary, serde_json::to_vec(&record)?)?;
                 std::fs::rename(temporary, path)?;
                 Ok(())
             })();
@@ -166,9 +187,10 @@ fn watch_port(cancel: Cancellation) -> Watcher {
     Watcher(finished)
 }
 
-async fn execute(args: Args) -> Result<ExecutionOutcome> {
+async fn execute(args: Args, usage: Arc<Usage>) -> Result<ExecutionOutcome> {
     let runtime = Runtime::load(&args.runtime)?;
     let mut options = GuestOptions::new(&args.root);
+    options.usage = usage;
     options.framed = args.framed;
     options.mode = if args.framed {
         Mode::Boot
@@ -337,6 +359,8 @@ pub fn main() {
         outcome: ExecutionOutcome::Failed {
             error: anyhow::anyhow!("launcher did not complete"),
         },
+        usage: Arc::default(),
+        metered: false,
     };
     let result = (|| -> Result<ExecutionOutcome> {
         if let Some(path) = &stderr {
@@ -375,11 +399,15 @@ pub fn main() {
             Runtime::load(&args.runtime)?.populate_root(&args.root, &root_options)?;
             return Ok(ExecutionOutcome::Exited { code: 0 });
         }
+        if let Some(path) = &args.stats {
+            marker.usage = Arc::new(Usage::published(path)?);
+        }
+        marker.metered = args.fuel.is_some();
         let _stdio_flags = fd::StatusFlags::capture(&[0, 1, 2])?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let result = runtime.block_on(execute(args));
+        let result = runtime.block_on(execute(args, marker.usage.clone()));
         // Cold compilation is blocking work; port closure must not wait for it.
         runtime.shutdown_background();
         result
@@ -403,4 +431,29 @@ pub fn main() {
     };
     drop(marker);
     std::process::exit(status);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn termination_records_carry_final_usage() {
+        let record = |outcome, fuel_consumed| {
+            serde_json::to_string(&Record {
+                outcome: &outcome,
+                fuel_consumed,
+                memory: 65_536,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            record(ExecutionOutcome::OutOfFuel, Some(1_000)),
+            r#"{"outcome":"out_of_fuel","fuel_consumed":1000,"memory":65536}"#
+        );
+        assert_eq!(
+            record(ExecutionOutcome::Exited { code: 3 }, None),
+            r#"{"outcome":"exited","code":3,"memory":65536}"#
+        );
+    }
 }

@@ -177,12 +177,15 @@ Both send to caller-supplied bounded channels and drop chunks when full.
 
 `Vm::stats` reports fuel consumed since the VM started, including boot, and
 the linear memory allocated. Fuel is metered only when `max_fuel` is set. A
-call hook samples both each time the guest calls into the host. A guest
-waits only in host calls, so the counts omit at most the work since its
-latest I/O. The resource limiter holds an allowed memory growth until the
-next sample or growth, so a growth that Wasmtime fails to allocate is never
-reported. The memory figure excludes compiled code and Wasmtime's own
-allocations.
+call hook samples both each time the guest calls into the host, the epoch
+callback samples them on every tick, and the store samples them when it is
+dropped, including when cancellation drops a running execution. The
+resource limiter holds an allowed memory growth until the next sample or
+growth, so a growth that Wasmtime fails to allocate is never reported. The
+memory figure excludes compiled code and Wasmtime's own allocations.
+
+With `--stats`, the launcher also publishes the same counts in a mapped
+file. Its termination record carries the final counts.
 
 ### Guest values
 

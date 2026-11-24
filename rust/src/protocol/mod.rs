@@ -3,7 +3,7 @@ mod etf;
 use anyhow::{Context, Result, bail, ensure};
 pub use etf::Value;
 
-pub(crate) const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 pub(crate) const EMBEDDED_API: u32 = 1;
 pub(crate) const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 

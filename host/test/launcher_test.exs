@@ -142,7 +142,8 @@ defmodule Kettlecorn.LauncherTest do
       started = System.monotonic_time(:millisecond)
       :erlang.exit(port, :kill)
       await_stopped(marker, started + 2000)
-      assert JSON.decode!(File.read!(marker)) == %{"outcome" => "cancelled"}
+      # Cancelled before the guest started: no memory yet, and no fuel without --fuel.
+      assert JSON.decode!(File.read!(marker)) == %{"outcome" => "cancelled", "memory" => 0}
       Instance.cleanup(instance)
       assert File.ls!(Path.join(tmp, "instances")) == []
     end

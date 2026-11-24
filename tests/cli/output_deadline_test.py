@@ -74,7 +74,7 @@ with tempfile.TemporaryDirectory() as directory:
             + ["--stderr", str(stderr), "--timeout", f"{timeout_seconds}s", "--", "-e", code]
         )
         marker = json.loads(stderr.with_suffix(".stopped").read_text())
-        assert marker == {"outcome": "timeout"}, marker
+        assert marker["outcome"] == "timeout" and "fuel_consumed" not in marker, marker
         if name == "exit":
             assert (root / "finished").read_text() == "done"
 
@@ -100,7 +100,8 @@ with tempfile.TemporaryDirectory() as directory:
         ]
     )
     marker = json.loads(stderr.with_suffix(".stopped").read_text())
-    assert marker == {"outcome": "out_of_fuel"}, marker
+    assert marker["outcome"] == "out_of_fuel", marker
+    assert marker["fuel_consumed"] == 3_000_000_000, marker
     assert (root / "fuel_started").read_text() == "done"
 
     instances = directory / "instances"

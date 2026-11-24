@@ -23,7 +23,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
-use usage::Limits;
+use usage::{Limits, Metered};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{CallHook, Config, Engine, Store, StoreLimitsBuilder, Trap, UpdateDeadline};
 use wasmtime_wasi::p3::bindings::Command;
@@ -252,7 +252,7 @@ impl PreparedRuntime {
         if let Some(bytes) = options.max_memory {
             limits = limits.memory_size(bytes);
         }
-        let mut store = Store::new(
+        let store = Store::new(
             engine,
             State {
                 ctx: builder.build(),
@@ -262,13 +262,14 @@ impl PreparedRuntime {
                 http: wasmtime_wasi_http::WasiHttpCtx::new(),
             },
         );
+        let mut store = Metered::new(store, options.usage.clone(), options.max_fuel);
         store.limiter(|state| &mut state.limits);
         let budget = options.max_fuel;
         if let Some(budget) = budget {
             store.set_fuel(budget)?;
         }
-        // Usage changes only while WebAssembly runs, and a running guest
-        // waits only in host calls, so sampling there keeps it current.
+        // Usage changes only while WebAssembly runs. Sampling it on calls into
+        // the host and on epoch ticks keeps it within one tick.
         let usage = options.usage.clone();
         store.call_hook(move |store, transition| {
             if matches!(transition, CallHook::CallingHost) {
@@ -277,7 +278,9 @@ impl PreparedRuntime {
             Ok(())
         });
         let stopped = cancel.clone();
-        store.epoch_deadline_callback(move |_| {
+        let usage = options.usage.clone();
+        store.epoch_deadline_callback(move |store| {
+            usage.sample(budget, store);
             if stopped.is_cancelled() || deadline.is_some_and(|end| Instant::now() >= end) {
                 return Err(Trap::Interrupt.into());
             }
@@ -286,7 +289,7 @@ impl PreparedRuntime {
         store.set_epoch_deadline(1);
         let usage = options.usage.clone();
         let execution = async {
-            let command = Command::instantiate_async(&mut store, component, &linker).await?;
+            let command = Command::instantiate_async(&mut *store, component, &linker).await?;
             usage.instantiated();
             let result = store
                 .run_concurrent(async move |store| command.wasi_cli_run().call_run(store).await)
@@ -301,7 +304,6 @@ impl PreparedRuntime {
             _ = expiration(deadline.map(Into::into)) => Ok(ExecutionOutcome::Timeout),
             result = execution => result,
         };
-        options.usage.sample(options.max_fuel, &store);
         match result {
             Err(_) if cancel.is_cancelled() => Ok(ExecutionOutcome::Cancelled),
             Err(error) => match error.downcast_ref::<Trap>() {
@@ -338,7 +340,7 @@ mod tests {
         fs::write(
             directory.join("manifest.json"),
             serde_json::json!({
-                "protocol": 1,
+                "protocol": crate::protocol::VERSION,
                 "otp": "29",
                 "elixir": "1.20.5",
                 "tested_with": {"wasmtime": WASMTIME_VERSION},

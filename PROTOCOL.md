@@ -1,6 +1,6 @@
 # Host ⇄ VM stdio protocol
 
-Protocol version 1.
+Protocol version 2.
 Runtimes and libraries with different protocol versions cannot be used together.
 
 The guest exchanges frames over its stdin and stdout. The native launcher
@@ -249,6 +249,35 @@ entrypoint reads launch configuration to find the guest certificate location.
 code and scripts at declared absolute guest paths. Destinations cannot escape
 the private root. Root population starts no engine or guest.
 
+## Launcher stats
+
+With `--stats PATH`, the launcher creates `PATH` (mode 0600) before the guest
+starts and maps it. Host VMs put it in the private VM directory, outside the
+guest root. The file holds three little-endian `u64` words:
+
+| Offset | Value |
+|---|---|
+| 0 | fuel consumed, including boot; 0 unless `--fuel` is set |
+| 8 | linear memory in bytes |
+| 16 | checksum: `mix(fuel ^ mix(memory))` |
+
+`mix` is the SplitMix64 finalizer, with wrapping 64-bit arithmetic:
+
+```text
+z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+z ^ (z >> 31)
+```
+
+For fuel 123 and memory 456, the checksum is `0x2481f22f5c03602e`. A new file
+is all zeros, which is a valid record.
+
+The launcher updates the file when the guest calls the host, on every epoch
+tick while it runs, and when the execution ends. Memory growth appears once
+Wasmtime has allocated it. The termination record carries the final values.
+Updates can be continuous, so readers read the 24 bytes in one read and
+accept the values when the checksum matches, retrying otherwise.
+
 ## Launcher termination
 
 After dropping the guest, the native launcher atomically publishes a UTF-8 JSON
@@ -262,6 +291,13 @@ these shapes:
 {"outcome":"timeout"}
 {"outcome":"out_of_fuel"}
 {"outcome":"failed"}
+```
+
+Every record also has `"memory"`, the guest's final linear memory in bytes,
+and, when `--fuel` is set, `"fuel_consumed"`, the final fuel count:
+
+```json
+{"outcome":"out_of_fuel","fuel_consumed":1000000000,"memory":67108864}
 ```
 
 `exited` carries the guest exit code (or a launcher argument/signal exit code).

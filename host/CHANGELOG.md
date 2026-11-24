@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+* **Breaking:** protocol version 2. The library refuses earlier runtimes:
+  install the matching runtime with `mix kettlecorn.install` and cook
+  applications again.
+
 ## 0.2.0
 
 * Support embedding VMs in Rust applications through the `kettlecorn` crate.

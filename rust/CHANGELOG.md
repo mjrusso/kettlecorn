@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* **Breaking:** install a runtime that supports protocol version 2.
 * **Breaking:** `Vm::shutdown` returns a `Shutdown` with the final resource
   stats and a `result`. Replace `vm.shutdown().await?` with
   `vm.shutdown().await.result?`.
