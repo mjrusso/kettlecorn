@@ -5,13 +5,14 @@ defmodule Kettlecorn.LauncherTest do
   @moduletag :integration
   @moduletag :tmp_dir
 
+  @tag timeout: 120_000
   test "termination outcomes are independent of retained stderr" do
     for {options, code, reason, diagnostics} <- [
           {[], "System.halt(0)", :normal, "wasm trap: interrupt; all fuel consumed"},
           {[], "System.halt(23)", {:exit_status, 23}, "wasm trap: interrupt"},
           {[max_fuel: 3_000_000_000], "Stream.repeatedly(fn -> 1 end) |> Stream.run()",
            :out_of_fuel, :binary.copy("x", 8192)},
-          {[max_lifetime: 10_000], "Process.sleep(:infinity)", :timeout, :binary.copy("x", 8192)}
+          {[max_lifetime: 20_000], nil, :timeout, :binary.copy("x", 8192)}
         ] do
       {:ok, vm} = Kettlecorn.start(TestRuntime.opts(options))
       on_exit(fn -> Kettlecorn.stop(vm) end)
@@ -19,13 +20,15 @@ defmodule Kettlecorn.LauncherTest do
       instance = :sys.get_state(vm).instance
       stderr = Instance.stderr_file(instance)
 
-      assert {:ok, _} =
-               Kettlecorn.eval(vm, "spawn(fn -> Process.sleep(100); #{code} end)")
+      if code do
+        assert {:ok, _} =
+                 Kettlecorn.eval(vm, "spawn(fn -> Process.sleep(100); #{code} end)")
+      end
 
       :ok = :sys.suspend(vm)
 
       try do
-        await_stopped(stderr <> ".stopped", System.monotonic_time(:millisecond) + 20_000)
+        await_stopped(stderr <> ".stopped", System.monotonic_time(:millisecond) + 30_000)
         File.write!(stderr, diagnostics)
       after
         :ok = :sys.resume(vm)

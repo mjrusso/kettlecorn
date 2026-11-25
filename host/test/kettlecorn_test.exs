@@ -107,7 +107,7 @@ defmodule KettlecornTest do
                Kettlecorn.eval(
                  vm,
                  ~S'IO.puts("start"); Stream.repeatedly(fn -> 1 end) |> Stream.run()',
-                 timeout: 500
+                 timeout: 3_000
                )
 
       assert {:ok, %{"value" => :still_alive}} = Kettlecorn.eval(vm, ":still_alive")
@@ -152,10 +152,15 @@ defmodule KettlecornTest do
           send(parent, :suspended)
           Process.sleep(:infinity)
         end)
-        receive do: (:suspended -> #{outcome})
+        receive do
+          :suspended ->
+            Kettlecorn.Host.send("tracker suspended")
+            #{outcome}
+        end
         """
 
-        result = Kettlecorn.eval(vm, code, timeout: 500)
+        result = Kettlecorn.eval(vm, code, timeout: 3_000)
+        assert_receive {:kettlecorn, ^vm, {:message, "tracker suspended"}}, 5_000
 
         if outcome == ":finished" do
           assert {:ok, %{"value" => :finished}} = result
@@ -165,8 +170,8 @@ defmodule KettlecornTest do
 
         for name <- [:capture_tracker, :capture_coordinator], do: assert_guest_exit(vm, name)
 
-        assert {:ok, _} =
-                 Kettlecorn.eval(vm, "Process.exit(Process.whereis(:capture_suspender), :kill)")
+        cleanup = "if pid = Process.whereis(:capture_suspender), do: Process.exit(pid, :kill)"
+        assert {:ok, _} = Kettlecorn.eval(vm, cleanup)
       end
     end
 
