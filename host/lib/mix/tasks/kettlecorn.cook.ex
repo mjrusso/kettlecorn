@@ -14,7 +14,7 @@ defmodule Mix.Tasks.Kettlecorn.Cook do
 
   Add Kettlecorn to the project for the task only:
 
-      {:kettlecorn, "~> 0.2", runtime: false, only: [:dev, :prod]}
+      {:kettlecorn, "~> 0.3", runtime: false, only: [:dev, :prod]}
 
   Options:
 

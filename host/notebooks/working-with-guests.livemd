@@ -1,7 +1,7 @@
 # Working with guest VMs
 
 ```elixir
-Mix.install([{:kettlecorn, "~> 0.2.0"}])
+Mix.install([{:kettlecorn, "~> 0.3.0"}])
 ```
 
 ## About this notebook

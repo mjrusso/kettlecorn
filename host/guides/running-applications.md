@@ -146,7 +146,7 @@ Cooking requires the POSIX `cp` tool. Add Kettlecorn to the project for the
 cooking task:
 
 ```elixir
-{:kettlecorn, "~> 0.2", runtime: false}
+{:kettlecorn, "~> 0.3", runtime: false}
 ```
 
 Use the runtime's OTP major release and exact Elixir version to compile
