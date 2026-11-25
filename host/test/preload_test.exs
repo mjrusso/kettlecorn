@@ -29,8 +29,10 @@ defmodule Kettlecorn.PreloadTest do
     code = ~S"""
     loaded = for {module, _} <- :code.all_loaded(), do: module
     created = for n <- 1..40, do: String.to_atom("kettlecorn_order_#{n}")
-    small = Map.new(Enum.take(created, 10), &{&1, 0})
-    {Map.keys(Map.new(loaded, &{&1, 0})), Map.keys(Map.new(created, &{&1, 0})), Map.keys(small)}
+    ordered_names = fn atoms ->
+      atoms |> Map.new(&{&1, 0}) |> Map.keys() |> Enum.map(&Atom.to_string/1)
+    end
+    {ordered_names.(loaded), ordered_names.(created), ordered_names.(Enum.take(created, 10))}
     """
 
     [first, second] =
