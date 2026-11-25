@@ -45,7 +45,7 @@ when runs must not share state:
 {:ok, %{"value" => 120}} =
   Kettlecorn.run("Enum.reduce(1..5, &*/2)",
     max_fuel: 50_000_000_000,
-    max_lifetime: 10_000
+    max_lifetime: 30_000
   )
 ```
 
@@ -160,7 +160,7 @@ stops. Halting the guest stops its VM:
   Kettlecorn.eval(vm, ~S<File.write!("/tmp/notes", "notes"); File.read!("/tmp/notes")>)
 
 {:error, {:vm_down, :normal}} =
-  Kettlecorn.run("System.halt(0)", max_fuel: 50_000_000_000, max_lifetime: 10_000)
+  Kettlecorn.run("System.halt(0)", max_fuel: 50_000_000_000, max_lifetime: 30_000)
 ```
 
 `network: true` grants sockets and `http: true` grants WASI HTTP to any
