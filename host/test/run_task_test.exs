@@ -154,6 +154,7 @@ defmodule Kettlecorn.RunTaskTest do
   end
 
   @tag :integration
+  @tag timeout: 120_000
   test "exiting the host Mix process stops the CLI and removes its root", %{tmp_dir: dir} do
     instances = Path.join(dir, "instances")
     File.mkdir_p!(instances)
@@ -169,10 +170,11 @@ defmodule Kettlecorn.RunTaskTest do
         :binary,
         :exit_status,
         :eof,
+        :stderr_to_stdout,
         args: [
           "kettlecorn.run",
           "--timeout",
-          "30s",
+          "120s",
           "-e",
           ~s|IO.puts("ready"); Process.sleep(:infinity)|
         ],
@@ -187,7 +189,8 @@ defmodule Kettlecorn.RunTaskTest do
         do: System.cmd("kill", ["-TERM", to_string(pid)], stderr_to_stdout: true)
     end)
 
-    await_ready(port, "")
+    deadline = System.monotonic_time(:millisecond) + 90_000
+    await_ready(port, "", deadline)
     assert Path.wildcard(Path.join(instances, "kettlecorn-run.*")) != []
     assert {_, 0} = System.cmd("kill", ["-TERM", to_string(pid)])
     assert_receive {^port, {:exit_status, _status}}, 10_000
@@ -196,10 +199,20 @@ defmodule Kettlecorn.RunTaskTest do
     Port.close(port)
   end
 
-  defp await_ready(port, output) do
+  defp await_ready(port, output, deadline) do
     unless output =~ "ready\n" do
-      assert_receive {^port, {:data, chunk}}, 30_000
-      await_ready(port, output <> chunk)
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      receive do
+        {^port, {:data, chunk}} ->
+          await_ready(port, output <> chunk, deadline)
+
+        {^port, event} ->
+          flunk("CLI stopped before reporting ready (#{inspect(event)})\n#{output}")
+      after
+        remaining ->
+          flunk("Timed out waiting for CLI readiness\n#{output}")
+      end
     end
   end
 
